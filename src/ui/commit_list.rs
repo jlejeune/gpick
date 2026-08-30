@@ -1,7 +1,7 @@
 use crate::app::{AppState, ExecutionOutcome, ExecutionResult, Screen};
 use crossterm::event::KeyCode;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 pub fn handle_key_commit_list(state: &mut AppState, key: KeyCode) {
     match key {
@@ -40,7 +40,8 @@ pub fn handle_key_commit_list(state: &mut AppState, key: KeyCode) {
 }
 
 pub fn draw_commit_list(frame: &mut Frame, state: &AppState, preview: &str) {
-    let items: Vec<ListItem> = if state.commits.is_empty() {
+    let is_empty = state.commits.is_empty();
+    let items: Vec<ListItem> = if is_empty {
         let msg = state
             .last_error
             .clone()
@@ -57,7 +58,14 @@ pub fn draw_commit_list(frame: &mut Frame, state: &AppState, preview: &str) {
             })
             .collect()
     };
-    let list = List::new(items).block(Block::default().title("Commits").borders(Borders::ALL));
+    let list = List::new(items)
+        .block(Block::default().title("Commits").borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    if !is_empty {
+        list_state.select(Some(state.commit_cursor));
+    }
     let preview_widget = Paragraph::new(preview).block(Block::default().title("Preview").borders(Borders::ALL));
 
     let chunks = Layout::default()
@@ -65,7 +73,7 @@ pub fn draw_commit_list(frame: &mut Frame, state: &AppState, preview: &str) {
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(frame.area());
 
-    frame.render_widget(list, chunks[0]);
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
     frame.render_widget(preview_widget, chunks[1]);
 }
 

@@ -2,7 +2,7 @@ use crate::app::{AppState, Screen};
 use crate::git::Branch;
 use crossterm::event::KeyCode;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
 pub fn visible_branches(state: &AppState) -> Vec<&Branch> {
     let filter = state.branch_filter.to_lowercase();
@@ -46,7 +46,8 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
 
 pub fn draw_branch_list(frame: &mut Frame, state: &AppState) {
     let visible = visible_branches(state);
-    let items: Vec<ListItem> = if visible.is_empty() {
+    let is_empty = visible.is_empty();
+    let items: Vec<ListItem> = if is_empty {
         let msg = state
             .last_error
             .clone()
@@ -60,8 +61,15 @@ pub fn draw_branch_list(frame: &mut Frame, state: &AppState) {
     } else {
         format!("Branches (base: {}, filter: {})", state.base, state.branch_filter)
     };
-    let list = List::new(items).block(Block::default().title(title).borders(Borders::ALL));
-    frame.render_widget(list, frame.area());
+    let list = List::new(items)
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ");
+    let mut list_state = ListState::default();
+    if !is_empty {
+        list_state.select(Some(state.branch_cursor));
+    }
+    frame.render_stateful_widget(list, frame.area(), &mut list_state);
 }
 
 #[cfg(test)]
