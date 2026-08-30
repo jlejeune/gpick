@@ -42,7 +42,7 @@ pub fn handle_key_commit_list(state: &mut AppState, key: KeyCode) {
     }
 }
 
-pub fn draw_commit_list(frame: &mut Frame, state: &AppState, preview: &str) {
+pub fn draw_commit_list(frame: &mut Frame, area: Rect, state: &AppState, preview: &str) {
     let is_empty = state.commits.is_empty();
     let items: Vec<ListItem> = if is_empty {
         let msg = state
@@ -74,7 +74,7 @@ pub fn draw_commit_list(frame: &mut Frame, state: &AppState, preview: &str) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(frame.area());
+        .split(area);
 
     frame.render_stateful_widget(list, chunks[0], &mut list_state);
     frame.render_widget(preview_widget, chunks[1]);

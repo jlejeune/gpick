@@ -51,11 +51,11 @@ pub fn step_execution(state: &mut AppState) {
     }
 }
 
-pub fn draw_execution(frame: &mut Frame, state: &AppState) {
+pub fn draw_execution(frame: &mut Frame, area: Rect, state: &AppState) {
     if state.execution_index >= state.execution_queue.len() && !state.execution_queue.is_empty() {
         let widget = Paragraph::new("All done — press q to quit")
             .block(Block::default().title("Execution").borders(Borders::ALL));
-        frame.render_widget(widget, frame.area());
+        frame.render_widget(widget, area);
         return;
     }
 
@@ -72,7 +72,7 @@ pub fn draw_execution(frame: &mut Frame, state: &AppState) {
         })
         .collect();
     let list = List::new(items).block(Block::default().title("Execution").borders(Borders::ALL));
-    frame.render_widget(list, frame.area());
+    frame.render_widget(list, area);
 }
 
 #[cfg(test)]

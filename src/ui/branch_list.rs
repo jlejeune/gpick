@@ -44,7 +44,7 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
     }
 }
 
-pub fn draw_branch_list(frame: &mut Frame, state: &AppState) {
+pub fn draw_branch_list(frame: &mut Frame, area: Rect, state: &AppState) {
     let visible = visible_branches(state);
     let is_empty = visible.is_empty();
     let items: Vec<ListItem> = if is_empty {
@@ -69,7 +69,7 @@ pub fn draw_branch_list(frame: &mut Frame, state: &AppState) {
     if !is_empty {
         list_state.select(Some(state.branch_cursor));
     }
-    frame.render_stateful_widget(list, frame.area(), &mut list_state);
+    frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 #[cfg(test)]

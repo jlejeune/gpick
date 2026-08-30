@@ -6,6 +6,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::CrosstermBackend;
+use ratatui::prelude::{Constraint, Direction, Layout};
 use ratatui::Terminal;
 use std::io;
 
@@ -93,19 +94,23 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
         }
 
         terminal.draw(|frame| {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(1)])
+                .split(frame.area());
+            let (content, footer) = (chunks[0], chunks[1]);
+
             match state.screen {
-                Screen::BranchList => ui::branch_list::draw_branch_list(frame, state),
-                Screen::CommitList => ui::commit_list::draw_commit_list(frame, state, &preview),
-                Screen::Execution => ui::execution::draw_execution(frame, state),
+                Screen::BranchList => ui::branch_list::draw_branch_list(frame, content, state),
+                Screen::CommitList => ui::commit_list::draw_commit_list(frame, content, state, &preview),
+                Screen::Execution => ui::execution::draw_execution(frame, content, state),
                 Screen::ConflictPause => {
                     let status = git::status_summary(&state.cwd).unwrap_or_default();
-                    ui::conflict_pause::draw_conflict_pause(frame, state, &status);
+                    ui::conflict_pause::draw_conflict_pause(frame, content, state, &status);
                 }
                 Screen::Quit => {}
             }
-            if state.show_help {
-                ui::help::draw_help(frame);
-            }
+            ui::help::draw_footer(frame, footer, &state.screen);
         })?;
 
         // drive execution forward automatically while on the Execution screen
@@ -118,10 +123,6 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
             if let Event::Key(key) = event::read()? {
                 if is_ctrl_c(&key) {
                     state.screen = Screen::Quit;
-                    continue;
-                }
-
-                if ui::help::handle_key_help(state, key.code) {
                     continue;
                 }
 

@@ -91,14 +91,14 @@ pub fn handle_key_conflict_pause(state: &mut AppState, key: KeyCode) -> Result<(
     Ok(())
 }
 
-pub fn draw_conflict_pause(frame: &mut Frame, state: &AppState, status: &str) {
+pub fn draw_conflict_pause(frame: &mut Frame, area: Rect, state: &AppState, status: &str) {
     let text = format!(
         "{}\n\n{}\n\n[c] continue   [a] abort",
         state.conflict_message.clone().unwrap_or_default(),
         status
     );
     let widget = Paragraph::new(text).block(Block::default().title("Conflict").borders(Borders::ALL));
-    frame.render_widget(widget, frame.area());
+    frame.render_widget(widget, area);
 }
 
 #[cfg(test)]
