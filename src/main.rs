@@ -92,15 +92,20 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
             }
         }
 
-        terminal.draw(|frame| match state.screen {
-            Screen::BranchList => ui::branch_list::draw_branch_list(frame, state),
-            Screen::CommitList => ui::commit_list::draw_commit_list(frame, state, &preview),
-            Screen::Execution => ui::execution::draw_execution(frame, state),
-            Screen::ConflictPause => {
-                let status = git::status_summary(&state.cwd).unwrap_or_default();
-                ui::conflict_pause::draw_conflict_pause(frame, state, &status);
+        terminal.draw(|frame| {
+            match state.screen {
+                Screen::BranchList => ui::branch_list::draw_branch_list(frame, state),
+                Screen::CommitList => ui::commit_list::draw_commit_list(frame, state, &preview),
+                Screen::Execution => ui::execution::draw_execution(frame, state),
+                Screen::ConflictPause => {
+                    let status = git::status_summary(&state.cwd).unwrap_or_default();
+                    ui::conflict_pause::draw_conflict_pause(frame, state, &status);
+                }
+                Screen::Quit => {}
             }
-            Screen::Quit => {}
+            if state.show_help {
+                ui::help::draw_help(frame);
+            }
         })?;
 
         // drive execution forward automatically while on the Execution screen
@@ -113,6 +118,10 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
             if let Event::Key(key) = event::read()? {
                 if is_ctrl_c(&key) {
                     state.screen = Screen::Quit;
+                    continue;
+                }
+
+                if ui::help::handle_key_help(state, key.code) {
                     continue;
                 }
 

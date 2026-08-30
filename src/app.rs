@@ -52,6 +52,7 @@ pub struct AppState {
     pub conflict_message: Option<String>,
     pub pause_reason: Option<PauseReason>,
     pub last_error: Option<String>,
+    pub show_help: bool,
 }
 
 impl AppState {
@@ -73,6 +74,7 @@ impl AppState {
             conflict_message: None,
             pause_reason: None,
             last_error: None,
+            show_help: false,
         }
     }
 
