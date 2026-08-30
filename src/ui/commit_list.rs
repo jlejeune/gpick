@@ -19,6 +19,9 @@ pub fn handle_key_commit_list(state: &mut AppState, key: KeyCode) {
             }
         }
         KeyCode::Enter => {
+            if state.selected.is_empty() {
+                return;
+            }
             let mut queue: Vec<usize> = state.selected.iter().copied().collect();
             queue.sort_unstable();
             state.execution_results = queue
@@ -129,6 +132,15 @@ mod tests {
         handle_key_commit_list(&mut state, KeyCode::Enter);
         assert_eq!(state.execution_queue, vec![0, 1]);
         assert_eq!(state.screen, Screen::Execution);
+    }
+
+    #[test]
+    fn enter_with_no_selection_stays_on_commit_list() {
+        let mut state = state_with_commits();
+        state.screen = Screen::CommitList;
+        handle_key_commit_list(&mut state, KeyCode::Enter);
+        assert_eq!(state.screen, Screen::CommitList);
+        assert!(state.execution_queue.is_empty());
     }
 
     #[test]
