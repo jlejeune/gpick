@@ -26,13 +26,18 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
         }
         KeyCode::Char('q') => state.screen = Screen::Quit,
         KeyCode::Esc => state.screen = Screen::Quit,
-        KeyCode::Char('d') => {
-            let local_branch = visible_branches(state)
-                .get(state.branch_cursor)
-                .filter(|b| b.is_local)
-                .map(|b| b.name.clone());
-            if let Some(name) = local_branch {
-                state.pending_delete = Some(name);
+        KeyCode::Delete => {
+            match visible_branches(state).get(state.branch_cursor) {
+                Some(b) if b.is_local => {
+                    let name = b.name.clone();
+                    state.pending_delete = Some(name);
+                    state.last_error = None;
+                }
+                Some(_) => {
+                    state.last_error =
+                        Some("Cannot delete a remote-tracking branch (origin/...)".to_string());
+                }
+                None => {}
             }
         }
         KeyCode::Backspace => {
@@ -176,21 +181,33 @@ mod tests {
     }
 
     #[test]
-    fn d_on_local_branch_sets_pending_delete() {
+    fn delete_key_on_local_branch_sets_pending_delete() {
         let mut state = state_with_branches(&["a", "b"]);
-        handle_key_branch_list(&mut state, KeyCode::Char('d'));
+        handle_key_branch_list(&mut state, KeyCode::Delete);
         assert_eq!(state.pending_delete, Some("a".to_string()));
     }
 
     #[test]
-    fn d_on_remote_branch_does_nothing() {
+    fn delete_key_on_remote_branch_sets_an_error_instead() {
         let mut state = AppState::new(
             "/tmp".into(),
             "main".into(),
             vec![Branch { name: "origin/feature".into(), last_commit_epoch: 0, is_local: false }],
         );
-        handle_key_branch_list(&mut state, KeyCode::Char('d'));
+        handle_key_branch_list(&mut state, KeyCode::Delete);
         assert_eq!(state.pending_delete, None);
+        assert!(state.last_error.is_some());
+    }
+
+    #[test]
+    fn char_d_filters_instead_of_deleting() {
+        let mut state = state_with_branches(&["dev", "feature"]);
+        handle_key_branch_list(&mut state, KeyCode::Char('d'));
+        assert_eq!(state.branch_filter, "d");
+        assert_eq!(state.pending_delete, None);
+        let visible = visible_branches(&state);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].name, "dev");
     }
 
     #[test]
