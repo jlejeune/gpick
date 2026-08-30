@@ -102,7 +102,13 @@ pub fn draw_branch_list(frame: &mut Frame, area: Rect, state: &AppState) {
             .unwrap_or_else(|| "No branches found".to_string());
         vec![ListItem::new(msg)]
     } else {
-        visible.iter().map(|b| ListItem::new(b.name.clone())).collect()
+        visible
+            .iter()
+            .map(|b| {
+                let marker = if b.is_local { "[L]" } else { "[R]" };
+                ListItem::new(format!("{marker} {}", b.name))
+            })
+            .collect()
     };
     let title = if state.branch_filter.is_empty() {
         format!("Branches (base: {})", state.base)
