@@ -83,6 +83,18 @@ pub fn delete_branch(cwd: &Path, name: &str) -> Result<(), GitError> {
     run_git(cwd, &["branch", "-D", name]).map(|_| ())
 }
 
+/// Deletes the real branch on a remote (`git push <remote> --delete <branch>`).
+/// This affects the shared remote, not just the local repo.
+pub fn delete_remote_branch(cwd: &Path, remote: &str, branch: &str) -> Result<(), GitError> {
+    run_git(cwd, &["push", remote, "--delete", branch]).map(|_| ())
+}
+
+/// Removes a worktree. Never forces — if the worktree has uncommitted
+/// changes, git refuses and this returns that error verbatim.
+pub fn remove_worktree(cwd: &Path, path: &str) -> Result<(), GitError> {
+    run_git(cwd, &["worktree", "remove", path]).map(|_| ())
+}
+
 pub fn detect_base(cwd: &Path, override_ref: Option<&str>) -> Result<String, GitError> {
     if let Some(r) = override_ref {
         return Ok(r.to_string());
@@ -300,6 +312,73 @@ mod tests {
 
         let branches = list_branches(dir.path()).unwrap();
         assert!(!branches.iter().any(|b| b.name == "throwaway"));
+    }
+
+    #[test]
+    fn delete_remote_branch_removes_it_from_the_remote() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        // a bare repo acts as a stand-in "remote" we can push --delete against
+        let remote_dir = TempDir::new().unwrap();
+        Command::new("git").args(["init", "-q", "--bare"]).current_dir(remote_dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_dir.path().to_str().unwrap()])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        Command::new("git").args(["branch", "throwaway"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["push", "-q", "origin", "throwaway"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+
+        delete_remote_branch(dir.path(), "origin", "throwaway").unwrap();
+
+        let remote_refs = run_git(remote_dir.path(), &["branch", "--list", "throwaway"]).unwrap();
+        assert!(remote_refs.is_empty());
+    }
+
+    #[test]
+    fn remove_worktree_removes_a_clean_worktree() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        Command::new("git").args(["branch", "feature"]).current_dir(dir.path()).status().unwrap();
+        let worktree_dir = TempDir::new().unwrap();
+        std::fs::remove_dir(worktree_dir.path()).unwrap(); // git worktree add needs the path to not exist
+        Command::new("git")
+            .args(["worktree", "add", "-q", worktree_dir.path().to_str().unwrap(), "feature"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+
+        remove_worktree(dir.path(), worktree_dir.path().to_str().unwrap()).unwrap();
+
+        assert!(!worktree_dir.path().exists());
+    }
+
+    #[test]
+    fn remove_worktree_refuses_a_dirty_worktree() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        Command::new("git").args(["branch", "feature"]).current_dir(dir.path()).status().unwrap();
+        let worktree_dir = TempDir::new().unwrap();
+        std::fs::remove_dir(worktree_dir.path()).unwrap();
+        Command::new("git")
+            .args(["worktree", "add", "-q", worktree_dir.path().to_str().unwrap(), "feature"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        std::fs::write(worktree_dir.path().join("untracked.txt"), "dirty").unwrap();
+        Command::new("git")
+            .args(["add", "untracked.txt"])
+            .current_dir(worktree_dir.path())
+            .status()
+            .unwrap();
+
+        let err = remove_worktree(dir.path(), worktree_dir.path().to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, GitError::CommandFailed(_)));
+        assert!(worktree_dir.path().exists());
     }
 
     #[test]

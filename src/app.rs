@@ -35,6 +35,19 @@ pub enum PauseReason {
     StepError,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PendingDelete {
+    /// Confirm force-deleting a local branch (`git branch -D`).
+    Local(String),
+    /// Confirm deleting a remote-tracking branch's real branch on the
+    /// remote (`git push <remote> --delete <branch>`).
+    Remote(String),
+    /// The local delete above failed because the branch is checked out in
+    /// another worktree; confirm removing that worktree (only if it has no
+    /// uncommitted changes — gpick never force-removes) and retrying.
+    RemoveWorktree { branch: String, path: String },
+}
+
 pub struct AppState {
     pub cwd: PathBuf,
     pub base: String,
@@ -52,7 +65,7 @@ pub struct AppState {
     pub conflict_message: Option<String>,
     pub pause_reason: Option<PauseReason>,
     pub last_error: Option<String>,
-    pub pending_delete: Option<String>,
+    pub pending_delete: Option<PendingDelete>,
 }
 
 impl AppState {

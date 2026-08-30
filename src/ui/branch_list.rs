@@ -1,4 +1,4 @@
-use crate::app::{AppState, Screen};
+use crate::app::{AppState, PendingDelete, Screen};
 use crate::git::{self, Branch};
 use crossterm::event::KeyCode;
 use ratatui::prelude::*;
@@ -27,17 +27,14 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
         KeyCode::Char('q') => state.screen = Screen::Quit,
         KeyCode::Esc => state.screen = Screen::Quit,
         KeyCode::Delete => {
-            match visible_branches(state).get(state.branch_cursor) {
-                Some(b) if b.is_local => {
-                    let name = b.name.clone();
-                    state.pending_delete = Some(name);
-                    state.last_error = None;
-                }
-                Some(_) => {
-                    state.last_error =
-                        Some("Cannot delete a remote-tracking branch (origin/...)".to_string());
-                }
-                None => {}
+            if let Some(b) = visible_branches(state).get(state.branch_cursor) {
+                let pending = if b.is_local {
+                    PendingDelete::Local(b.name.clone())
+                } else {
+                    PendingDelete::Remote(b.name.clone())
+                };
+                state.pending_delete = Some(pending);
+                state.last_error = None;
             }
         }
         KeyCode::Backspace => {
@@ -58,32 +55,97 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
     }
 }
 
+/// Prompt text for the footer while a delete confirmation is pending.
+pub fn confirm_prompt(pending: &PendingDelete) -> String {
+    match pending {
+        PendingDelete::Local(name) => format!("Delete local branch '{name}'? y/n"),
+        PendingDelete::Remote(name) => {
+            format!("Delete REMOTE branch '{name}' (affects origin)? y/n")
+        }
+        PendingDelete::RemoveWorktree { branch, path } => format!(
+            "'{branch}' is checked out at '{path}'. Remove that worktree and retry delete? y/n"
+        ),
+    }
+}
+
+/// If a `git branch -D` failure was caused by the branch being checked out
+/// in another worktree, extracts that worktree's path from git's error
+/// text. Handles both known message shapes ("checked out at '<path>'" and
+/// "used by worktree at '<path>'") by taking the last single-quoted
+/// substring, since in both cases that's the path.
+fn parse_worktree_path(err: &str) -> Option<String> {
+    if !err.contains("worktree") && !err.contains("checked out") {
+        return None;
+    }
+    let end = err.rfind('\'')?;
+    let start = err[..end].rfind('\'')?;
+    Some(err[start + 1..end].to_string())
+}
+
+fn remove_deleted_branch(state: &mut AppState, name: &str) {
+    state.branches.retain(|b| b.name != name);
+    let visible_len = visible_branches(state).len();
+    if state.branch_cursor >= visible_len {
+        state.branch_cursor = visible_len.saturating_sub(1);
+    }
+    state.last_error = None;
+}
+
 /// Handles a key press while a delete confirmation is pending. Returns
 /// `true` if the key was consumed here (the caller must not dispatch it
 /// to `handle_key_branch_list`). While a confirmation is pending, every
 /// key is swallowed so the user can't navigate mid-prompt.
 pub fn handle_key_delete_confirm(state: &mut AppState, key: KeyCode) -> bool {
-    let Some(name) = state.pending_delete.clone() else {
+    let Some(pending) = state.pending_delete.clone() else {
         return false;
     };
 
     match key {
-        KeyCode::Char('y') => {
-            match git::delete_branch(&state.cwd, &name) {
+        KeyCode::Char('y') => match pending {
+            PendingDelete::Local(name) => match git::delete_branch(&state.cwd, &name) {
                 Ok(()) => {
-                    state.branches.retain(|b| b.name != name);
-                    let visible_len = visible_branches(state).len();
-                    if state.branch_cursor >= visible_len {
-                        state.branch_cursor = visible_len.saturating_sub(1);
-                    }
-                    state.last_error = None;
+                    remove_deleted_branch(state, &name);
+                    state.pending_delete = None;
                 }
                 Err(e) => {
-                    state.last_error = Some(e.to_string());
+                    let msg = e.to_string();
+                    if let Some(path) = parse_worktree_path(&msg) {
+                        state.pending_delete = Some(PendingDelete::RemoveWorktree { branch: name, path });
+                    } else {
+                        state.last_error = Some(msg);
+                        state.pending_delete = None;
+                    }
                 }
+            },
+            PendingDelete::Remote(name) => {
+                let (remote, branch) = name.split_once('/').unwrap_or(("origin", name.as_str()));
+                match git::delete_remote_branch(&state.cwd, remote, branch) {
+                    Ok(()) => {
+                        remove_deleted_branch(state, &name);
+                    }
+                    Err(e) => {
+                        state.last_error = Some(e.to_string());
+                    }
+                }
+                state.pending_delete = None;
             }
-            state.pending_delete = None;
-        }
+            PendingDelete::RemoveWorktree { branch, path } => {
+                match git::remove_worktree(&state.cwd, &path) {
+                    Ok(()) => match git::delete_branch(&state.cwd, &branch) {
+                        Ok(()) => {
+                            remove_deleted_branch(state, &branch);
+                        }
+                        Err(e) => {
+                            state.last_error = Some(e.to_string());
+                        }
+                    },
+                    Err(e) => {
+                        state.last_error = Some(e.to_string());
+                    }
+                }
+                state.pending_delete = None;
+            }
+        },
         KeyCode::Char('n') | KeyCode::Esc => {
             state.pending_delete = None;
         }
@@ -187,22 +249,21 @@ mod tests {
     }
 
     #[test]
-    fn delete_key_on_local_branch_sets_pending_delete() {
+    fn delete_key_on_local_branch_sets_pending_local_delete() {
         let mut state = state_with_branches(&["a", "b"]);
         handle_key_branch_list(&mut state, KeyCode::Delete);
-        assert_eq!(state.pending_delete, Some("a".to_string()));
+        assert_eq!(state.pending_delete, Some(PendingDelete::Local("a".to_string())));
     }
 
     #[test]
-    fn delete_key_on_remote_branch_sets_an_error_instead() {
+    fn delete_key_on_remote_branch_sets_pending_remote_delete() {
         let mut state = AppState::new(
             "/tmp".into(),
             "main".into(),
             vec![Branch { name: "origin/feature".into(), last_commit_epoch: 0, is_local: false }],
         );
         handle_key_branch_list(&mut state, KeyCode::Delete);
-        assert_eq!(state.pending_delete, None);
-        assert!(state.last_error.is_some());
+        assert_eq!(state.pending_delete, Some(PendingDelete::Remote("origin/feature".to_string())));
     }
 
     #[test]
@@ -219,11 +280,11 @@ mod tests {
     #[test]
     fn other_keys_are_swallowed_while_delete_is_pending() {
         let mut state = state_with_branches(&["a", "b"]);
-        state.pending_delete = Some("a".to_string());
+        state.pending_delete = Some(PendingDelete::Local("a".to_string()));
         let consumed = handle_key_delete_confirm(&mut state, KeyCode::Down);
         assert!(consumed);
         assert_eq!(state.branch_cursor, 0);
-        assert_eq!(state.pending_delete, Some("a".to_string()));
+        assert_eq!(state.pending_delete, Some(PendingDelete::Local("a".to_string())));
     }
 
     #[test]
@@ -236,38 +297,152 @@ mod tests {
     #[test]
     fn n_cancels_pending_delete_without_deleting() {
         let mut state = state_with_branches(&["a"]);
-        state.pending_delete = Some("a".to_string());
+        state.pending_delete = Some(PendingDelete::Local("a".to_string()));
         handle_key_delete_confirm(&mut state, KeyCode::Char('n'));
         assert_eq!(state.pending_delete, None);
         assert!(state.branches.iter().any(|b| b.name == "a"));
     }
 
-    #[test]
-    fn y_deletes_the_local_branch_and_clears_pending_delete() {
+    fn init_repo() -> (tempfile::TempDir, std::path::PathBuf) {
         use std::process::Command;
-        use tempfile::TempDir;
-
-        let dir = TempDir::new().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
         Command::new("git").args(["init", "-q"]).current_dir(dir.path()).status().unwrap();
         Command::new("git").args(["config", "user.email", "t@example.com"]).current_dir(dir.path()).status().unwrap();
         Command::new("git").args(["config", "user.name", "Test"]).current_dir(dir.path()).status().unwrap();
         std::fs::write(dir.path().join("a.txt"), "a").unwrap();
         Command::new("git").args(["add", "."]).current_dir(dir.path()).status().unwrap();
         Command::new("git").args(["commit", "-q", "-m", "a"]).current_dir(dir.path()).status().unwrap();
-        Command::new("git").args(["branch", "throwaway"]).current_dir(dir.path()).status().unwrap();
+        let path = dir.path().to_path_buf();
+        (dir, path)
+    }
+
+    #[test]
+    fn y_deletes_the_local_branch_and_clears_pending_delete() {
+        use std::process::Command;
+        let (_dir, cwd) = init_repo();
+        Command::new("git").args(["branch", "throwaway"]).current_dir(&cwd).status().unwrap();
 
         let mut state = AppState::new(
-            dir.path().to_path_buf(),
+            cwd.clone(),
             "main".into(),
             vec![Branch { name: "throwaway".into(), last_commit_epoch: 0, is_local: true }],
         );
-        state.pending_delete = Some("throwaway".to_string());
+        state.pending_delete = Some(PendingDelete::Local("throwaway".to_string()));
 
         handle_key_delete_confirm(&mut state, KeyCode::Char('y'));
 
         assert_eq!(state.pending_delete, None);
         assert!(!state.branches.iter().any(|b| b.name == "throwaway"));
-        let remaining = git::run_git(dir.path(), &["branch", "--list", "throwaway"]).unwrap();
+        let remaining = git::run_git(&cwd, &["branch", "--list", "throwaway"]).unwrap();
         assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn y_deletes_the_remote_branch_via_push_delete() {
+        use std::process::Command;
+        let (_dir, cwd) = init_repo();
+        let remote_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "-q", "--bare"]).current_dir(remote_dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_dir.path().to_str().unwrap()])
+            .current_dir(&cwd)
+            .status()
+            .unwrap();
+        Command::new("git").args(["branch", "throwaway"]).current_dir(&cwd).status().unwrap();
+        Command::new("git").args(["push", "-q", "origin", "throwaway"]).current_dir(&cwd).status().unwrap();
+
+        let mut state = AppState::new(
+            cwd.clone(),
+            "main".into(),
+            vec![Branch { name: "origin/throwaway".into(), last_commit_epoch: 0, is_local: false }],
+        );
+        state.pending_delete = Some(PendingDelete::Remote("origin/throwaway".to_string()));
+
+        handle_key_delete_confirm(&mut state, KeyCode::Char('y'));
+
+        assert_eq!(state.pending_delete, None);
+        assert!(!state.branches.iter().any(|b| b.name == "origin/throwaway"));
+        let remote_refs = git::run_git(remote_dir.path(), &["branch", "--list", "throwaway"]).unwrap();
+        assert!(remote_refs.is_empty());
+    }
+
+    #[test]
+    fn local_delete_checked_out_elsewhere_offers_worktree_removal() {
+        use std::process::Command;
+        let (_dir, cwd) = init_repo();
+        Command::new("git").args(["branch", "feature"]).current_dir(&cwd).status().unwrap();
+        let worktree_dir = tempfile::TempDir::new().unwrap();
+        std::fs::remove_dir(worktree_dir.path()).unwrap();
+        Command::new("git")
+            .args(["worktree", "add", "-q", worktree_dir.path().to_str().unwrap(), "feature"])
+            .current_dir(&cwd)
+            .status()
+            .unwrap();
+
+        let mut state = AppState::new(
+            cwd.clone(),
+            "main".into(),
+            vec![Branch { name: "feature".into(), last_commit_epoch: 0, is_local: true }],
+        );
+        state.pending_delete = Some(PendingDelete::Local("feature".to_string()));
+
+        handle_key_delete_confirm(&mut state, KeyCode::Char('y'));
+
+        match state.pending_delete {
+            Some(PendingDelete::RemoveWorktree { branch, path }) => {
+                assert_eq!(branch, "feature");
+                assert_eq!(path, worktree_dir.path().to_str().unwrap());
+            }
+            other => panic!("expected RemoveWorktree, got {other:?}"),
+        }
+        // branch still exists — nothing destructive happened yet
+        let still_there = git::run_git(&cwd, &["branch", "--list", "feature"]).unwrap();
+        assert!(!still_there.is_empty());
+    }
+
+    #[test]
+    fn confirming_worktree_removal_removes_it_and_retries_delete() {
+        use std::process::Command;
+        let (_dir, cwd) = init_repo();
+        Command::new("git").args(["branch", "feature"]).current_dir(&cwd).status().unwrap();
+        let worktree_dir = tempfile::TempDir::new().unwrap();
+        let worktree_path = worktree_dir.path().to_path_buf();
+        std::fs::remove_dir(&worktree_path).unwrap();
+        Command::new("git")
+            .args(["worktree", "add", "-q", worktree_path.to_str().unwrap(), "feature"])
+            .current_dir(&cwd)
+            .status()
+            .unwrap();
+
+        let mut state = AppState::new(
+            cwd.clone(),
+            "main".into(),
+            vec![Branch { name: "feature".into(), last_commit_epoch: 0, is_local: true }],
+        );
+        state.pending_delete = Some(PendingDelete::RemoveWorktree {
+            branch: "feature".to_string(),
+            path: worktree_path.to_str().unwrap().to_string(),
+        });
+
+        handle_key_delete_confirm(&mut state, KeyCode::Char('y'));
+
+        assert_eq!(state.pending_delete, None);
+        assert!(!worktree_path.exists());
+        let branch_left = git::run_git(&cwd, &["branch", "--list", "feature"]).unwrap();
+        assert!(branch_left.is_empty());
+        assert!(!state.branches.iter().any(|b| b.name == "feature"));
+    }
+
+    #[test]
+    fn parse_worktree_path_extracts_the_path_from_either_message_shape() {
+        assert_eq!(
+            parse_worktree_path("error: Cannot delete branch 'foo' checked out at '/tmp/wt'"),
+            Some("/tmp/wt".to_string())
+        );
+        assert_eq!(
+            parse_worktree_path("fatal: 'foo' is already used by worktree at '/tmp/wt2'"),
+            Some("/tmp/wt2".to_string())
+        );
+        assert_eq!(parse_worktree_path("error: branch 'foo' not fully merged"), None);
     }
 }

@@ -110,8 +110,8 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
                 }
                 Screen::Quit => {}
             }
-            if let Some(name) = &state.pending_delete {
-                ui::help::draw_footer_text(frame, footer, &format!("Delete branch '{name}'? y/n"));
+            if let Some(pending) = &state.pending_delete {
+                ui::help::draw_footer_text(frame, footer, &ui::branch_list::confirm_prompt(pending));
             } else if let Some(err) = &state.last_error {
                 ui::help::draw_footer_text(frame, footer, &format!("Error: {err}"));
             } else {
