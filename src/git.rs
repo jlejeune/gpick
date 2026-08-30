@@ -1,0 +1,368 @@
+use std::path::Path;
+use std::process::Command;
+
+#[derive(Debug, thiserror::Error)]
+pub enum GitError {
+    #[error("not a git repository")]
+    NotAGitRepo,
+    #[error("git command failed: {0}")]
+    CommandFailed(String),
+    #[error("could not resolve a base branch")]
+    NoBaseFound,
+}
+
+pub fn run_git(cwd: &Path, args: &[&str]) -> Result<String, GitError> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| GitError::CommandFailed(e.to_string()))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(GitError::CommandFailed(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
+pub fn check_is_repo(cwd: &Path) -> Result<(), GitError> {
+    match run_git(cwd, &["rev-parse", "--is-inside-work-tree"]) {
+        Ok(out) if out == "true" => Ok(()),
+        _ => Err(GitError::NotAGitRepo),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Branch {
+    pub name: String,
+    pub last_commit_epoch: i64,
+}
+
+pub fn list_branches(cwd: &Path) -> Result<Vec<Branch>, GitError> {
+    let current = run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+
+    let raw = run_git(
+        cwd,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)|%(committerdate:unix)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+
+    let mut branches: Vec<Branch> = raw
+        .lines()
+        .filter_map(|line| {
+            let (name, epoch) = line.split_once('|')?;
+            if name == current || name.ends_with("/HEAD") {
+                return None;
+            }
+            Some(Branch {
+                name: name.to_string(),
+                last_commit_epoch: epoch.parse().unwrap_or(0),
+            })
+        })
+        .collect();
+
+    branches.sort_by(|a, b| b.last_commit_epoch.cmp(&a.last_commit_epoch));
+    Ok(branches)
+}
+
+pub fn detect_base(cwd: &Path, override_ref: Option<&str>) -> Result<String, GitError> {
+    if let Some(r) = override_ref {
+        return Ok(r.to_string());
+    }
+
+    if let Ok(sym) = run_git(cwd, &["symbolic-ref", "refs/remotes/origin/HEAD"]) {
+        if let Some(short) = sym.strip_prefix("refs/remotes/") {
+            return Ok(short.to_string());
+        }
+    }
+
+    for candidate in ["main", "master"] {
+        if run_git(cwd, &["rev-parse", "--verify", "--quiet", candidate]).is_ok() {
+            return Ok(candidate.to_string());
+        }
+    }
+
+    Err(GitError::NoBaseFound)
+}
+
+#[derive(Debug, Clone)]
+pub struct Commit {
+    pub sha: String,
+    pub short_sha: String,
+    pub message: String,
+    pub author: String,
+    pub date_rfc2822: String,
+}
+
+const COMMIT_FIELD_SEP: &str = "\u{1f}"; // unit separator, won't collide with commit messages
+
+pub fn list_commits(cwd: &Path, base: &str, branch: &str) -> Result<Vec<Commit>, GitError> {
+    let range = format!("{base}..{branch}");
+    let format = format!("--format=%H{COMMIT_FIELD_SEP}%h{COMMIT_FIELD_SEP}%s{COMMIT_FIELD_SEP}%an{COMMIT_FIELD_SEP}%aD");
+    let raw = run_git(cwd, &["log", "--reverse", &format, "--end-of-options", &range])?;
+
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    Ok(raw
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split(COMMIT_FIELD_SEP).collect();
+            if parts.len() != 5 {
+                return None;
+            }
+            Some(Commit {
+                sha: parts[0].to_string(),
+                short_sha: parts[1].to_string(),
+                message: parts[2].to_string(),
+                author: parts[3].to_string(),
+                date_rfc2822: parts[4].to_string(),
+            })
+        })
+        .collect())
+}
+
+pub fn show_commit(cwd: &Path, sha: &str) -> Result<String, GitError> {
+    run_git(cwd, &["show", "--end-of-options", sha])
+}
+
+#[derive(Debug)]
+pub enum CherryPickOutcome {
+    Success,
+    Conflict(String),
+}
+
+fn cherry_pick_result(cwd: &Path, args: &[&str]) -> Result<CherryPickOutcome, GitError> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| GitError::CommandFailed(e.to_string()))?;
+
+    if output.status.success() {
+        Ok(CherryPickOutcome::Success)
+    } else {
+        Ok(CherryPickOutcome::Conflict(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
+pub fn cherry_pick(cwd: &Path, sha: &str) -> Result<CherryPickOutcome, GitError> {
+    cherry_pick_result(cwd, &["cherry-pick", sha])
+}
+
+pub fn cherry_pick_continue(cwd: &Path) -> Result<CherryPickOutcome, GitError> {
+    cherry_pick_result(cwd, &["cherry-pick", "--continue"])
+}
+
+pub fn cherry_pick_abort(cwd: &Path) -> Result<(), GitError> {
+    run_git(cwd, &["cherry-pick", "--abort"]).map(|_| ())
+}
+
+pub fn amend_reauthor(cwd: &Path, date_rfc2822: &str) -> Result<(), GitError> {
+    let date_arg = format!("--date={date_rfc2822}");
+    run_git(
+        cwd,
+        &["commit", "--amend", "--reset-author", "-s", "--no-edit", &date_arg],
+    )
+    .map(|_| ())
+}
+
+pub fn status_summary(cwd: &Path) -> Result<String, GitError> {
+    run_git(cwd, &["status", "--short"])
+}
+
+/// Undo the most recent commit (used to unwind a cherry-pick that succeeded
+/// but whose follow-up amend failed and is being aborted from ConflictPause).
+pub fn reset_hard_head_minus_one(cwd: &Path) -> Result<(), GitError> {
+    run_git(cwd, &["reset", "--hard", "HEAD~1"]).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn init_repo() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        Command::new("git").args(["init", "-q"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["config", "user.email", "t@example.com"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["config", "user.name", "Test"]).current_dir(dir.path()).status().unwrap();
+        dir
+    }
+
+    #[test]
+    fn run_git_returns_trimmed_stdout_on_success() {
+        let dir = init_repo();
+        let out = run_git(dir.path(), &["rev-parse", "--is-inside-work-tree"]).unwrap();
+        assert_eq!(out, "true");
+    }
+
+    #[test]
+    fn run_git_returns_command_failed_on_nonzero_exit() {
+        let dir = init_repo();
+        let err = run_git(dir.path(), &["show", "nonexistent-ref"]).unwrap_err();
+        assert!(matches!(err, GitError::CommandFailed(_)));
+    }
+
+    #[test]
+    fn check_is_repo_ok_for_git_repo() {
+        let dir = init_repo();
+        assert!(check_is_repo(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn check_is_repo_errs_for_non_repo() {
+        let dir = TempDir::new().unwrap();
+        assert!(matches!(check_is_repo(dir.path()), Err(GitError::NotAGitRepo)));
+    }
+
+    fn commit_file(dir: &TempDir, name: &str, content: &str) {
+        std::fs::write(dir.path().join(name), content).unwrap();
+        Command::new("git").args(["add", "."]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["commit", "-q", "-m", name]).current_dir(dir.path()).status().unwrap();
+    }
+
+    #[test]
+    fn list_branches_excludes_current_and_sorts_by_recency() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        Command::new("git").args(["branch", "old"]).current_dir(dir.path()).status().unwrap();
+        // make `old`'s tip older than a second new branch
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "b.txt", "b");
+        Command::new("git").args(["checkout", "-q", "-"]).current_dir(dir.path()).status().unwrap(); // back to master/main
+
+        let branches = list_branches(dir.path()).unwrap();
+        let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
+        assert!(names.contains(&"feature"));
+        assert!(names.contains(&"old"));
+        assert!(!names.iter().any(|n| n.contains("HEAD")));
+        // feature has a newer commit than old, so it must sort first
+        let feature_pos = names.iter().position(|n| *n == "feature").unwrap();
+        let old_pos = names.iter().position(|n| *n == "old").unwrap();
+        assert!(feature_pos < old_pos);
+    }
+
+    #[test]
+    fn detect_base_uses_override_verbatim() {
+        let dir = init_repo();
+        let base = detect_base(dir.path(), Some("some-ref")).unwrap();
+        assert_eq!(base, "some-ref");
+    }
+
+    #[test]
+    fn detect_base_falls_back_to_main_when_no_origin_head() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        Command::new("git").args(["branch", "-m", "main"]).current_dir(dir.path()).status().unwrap();
+        let base = detect_base(dir.path(), None).unwrap();
+        assert_eq!(base, "main");
+    }
+
+    #[test]
+    fn detect_base_errs_when_nothing_resolves() {
+        let dir = init_repo(); // no commits, no main/master, no origin
+        let err = detect_base(dir.path(), None).unwrap_err();
+        assert!(matches!(err, GitError::NoBaseFound));
+    }
+
+    #[test]
+    fn list_commits_returns_oldest_first_with_fields() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a"); // base
+        let base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "b.txt", "b"); // first ahead commit
+        commit_file(&dir, "c.txt", "c"); // second ahead commit
+
+        let commits = list_commits(dir.path(), &base_sha, "feature").unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].message, "b.txt");
+        assert_eq!(commits[1].message, "c.txt");
+        assert!(!commits[0].short_sha.is_empty());
+        assert_eq!(commits[0].author, "Test");
+    }
+
+    #[test]
+    fn show_commit_returns_diff_output() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        let sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        let out = show_commit(dir.path(), &sha).unwrap();
+        assert!(out.contains("a.txt"));
+    }
+
+    #[test]
+    fn cherry_pick_succeeds_on_clean_apply() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        let base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "b.txt", "b");
+        let feature_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["checkout", "-q", &base_sha]).current_dir(dir.path()).status().unwrap();
+
+        let outcome = cherry_pick(dir.path(), &feature_sha).unwrap();
+        assert!(matches!(outcome, CherryPickOutcome::Success));
+    }
+
+    #[test]
+    fn cherry_pick_reports_conflict_on_overlapping_change() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "line1");
+        let base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "line1-feature").unwrap();
+        Command::new("git").args(["commit", "-q", "-am", "feature change"]).current_dir(dir.path()).status().unwrap();
+        let feature_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        Command::new("git").args(["checkout", "-q", &base_sha]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "line1-base").unwrap();
+        Command::new("git").args(["commit", "-q", "-am", "base change"]).current_dir(dir.path()).status().unwrap();
+
+        let outcome = cherry_pick(dir.path(), &feature_sha).unwrap();
+        assert!(matches!(outcome, CherryPickOutcome::Conflict(_)));
+        cherry_pick_abort(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn amend_reauthor_updates_author_and_signoff() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        amend_reauthor(dir.path(), "Mon, 1 Jan 2024 00:00:00 +0000").unwrap();
+        let log = run_git(dir.path(), &["log", "-1", "--format=%an|%ad|%B"]).unwrap();
+        assert!(log.contains("Test"));
+        assert!(log.contains("Signed-off-by"));
+    }
+
+    #[test]
+    fn status_summary_lists_unmerged_paths_on_conflict() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "line1");
+        let base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "line1-feature").unwrap();
+        Command::new("git").args(["commit", "-q", "-am", "feature change"]).current_dir(dir.path()).status().unwrap();
+        let feature_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", &base_sha]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "line1-base").unwrap();
+        Command::new("git").args(["commit", "-q", "-am", "base change"]).current_dir(dir.path()).status().unwrap();
+
+        cherry_pick(dir.path(), &feature_sha).unwrap();
+        let status = status_summary(dir.path()).unwrap();
+        assert!(status.contains("a.txt"));
+        cherry_pick_abort(dir.path()).unwrap();
+    }
+}
