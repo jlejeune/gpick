@@ -110,7 +110,11 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
                 }
                 Screen::Quit => {}
             }
-            ui::help::draw_footer(frame, footer, &state.screen);
+            if let Some(name) = &state.pending_delete {
+                ui::help::draw_footer_text(frame, footer, &format!("Delete branch '{name}'? y/n"));
+            } else {
+                ui::help::draw_footer(frame, footer, &state.screen);
+            }
         })?;
 
         // drive execution forward automatically while on the Execution screen
@@ -123,6 +127,10 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
             if let Event::Key(key) = event::read()? {
                 if is_ctrl_c(&key) {
                     state.screen = Screen::Quit;
+                    continue;
+                }
+
+                if ui::branch_list::handle_key_delete_confirm(state, key.code) {
                     continue;
                 }
 

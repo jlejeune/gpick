@@ -38,6 +38,7 @@ pub fn check_is_repo(cwd: &Path) -> Result<(), GitError> {
 pub struct Branch {
     pub name: String,
     pub last_commit_epoch: i64,
+    pub is_local: bool,
 }
 
 pub fn list_branches(cwd: &Path) -> Result<Vec<Branch>, GitError> {
@@ -47,7 +48,7 @@ pub fn list_branches(cwd: &Path) -> Result<Vec<Branch>, GitError> {
         cwd,
         &[
             "for-each-ref",
-            "--format=%(refname:short)|%(committerdate:unix)",
+            "--format=%(refname)|%(refname:short)|%(committerdate:unix)",
             "refs/heads",
             "refs/remotes",
         ],
@@ -56,19 +57,30 @@ pub fn list_branches(cwd: &Path) -> Result<Vec<Branch>, GitError> {
     let mut branches: Vec<Branch> = raw
         .lines()
         .filter_map(|line| {
-            let (name, epoch) = line.split_once('|')?;
+            let mut parts = line.splitn(3, '|');
+            let full_ref = parts.next()?;
+            let name = parts.next()?;
+            let epoch = parts.next()?;
             if name == current || name.ends_with("/HEAD") {
                 return None;
             }
             Some(Branch {
                 name: name.to_string(),
                 last_commit_epoch: epoch.parse().unwrap_or(0),
+                is_local: full_ref.starts_with("refs/heads/"),
             })
         })
         .collect();
 
     branches.sort_by(|a, b| b.last_commit_epoch.cmp(&a.last_commit_epoch));
     Ok(branches)
+}
+
+/// Force-deletes a local branch (`git branch -D`). Never call this on a
+/// remote-tracking ref (`origin/...`) — deleting that locally would not
+/// touch the branch on the remote and would just be confusing.
+pub fn delete_branch(cwd: &Path, name: &str) -> Result<(), GitError> {
+    run_git(cwd, &["branch", "-D", name]).map(|_| ())
 }
 
 pub fn detect_base(cwd: &Path, override_ref: Option<&str>) -> Result<String, GitError> {
@@ -252,6 +264,42 @@ mod tests {
         let feature_pos = names.iter().position(|n| *n == "feature").unwrap();
         let old_pos = names.iter().position(|n| *n == "old").unwrap();
         assert!(feature_pos < old_pos);
+
+        let old = branches.iter().find(|b| b.name == "old").unwrap();
+        assert!(old.is_local);
+    }
+
+    #[test]
+    fn list_branches_marks_remote_tracking_refs_as_not_local() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        let remote_dir = TempDir::new().unwrap();
+        Command::new("git")
+            .args(["clone", "-q", dir.path().to_str().unwrap(), remote_dir.path().to_str().unwrap()])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_dir.path().to_str().unwrap()])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        Command::new("git").args(["fetch", "-q", "origin"]).current_dir(dir.path()).status().unwrap();
+
+        let branches = list_branches(dir.path()).unwrap();
+        let remote = branches.iter().find(|b| b.name.starts_with("origin/")).unwrap();
+        assert!(!remote.is_local);
+    }
+
+    #[test]
+    fn delete_branch_removes_a_local_branch() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        Command::new("git").args(["branch", "throwaway"]).current_dir(dir.path()).status().unwrap();
+
+        delete_branch(dir.path(), "throwaway").unwrap();
+
+        let branches = list_branches(dir.path()).unwrap();
+        assert!(!branches.iter().any(|b| b.name == "throwaway"));
     }
 
     #[test]
