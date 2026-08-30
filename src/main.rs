@@ -94,9 +94,18 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
         }
 
         terminal.draw(|frame| {
+            let footer_str: String = if let Some(pending) = &state.pending_delete {
+                ui::branch_list::confirm_prompt(pending)
+            } else if let Some(err) = &state.last_error {
+                format!("Error: {err}")
+            } else {
+                ui::help::footer_text(&state.screen).to_string()
+            };
+            let footer_height = ui::help::footer_height(&footer_str, frame.area().width);
+
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(1)])
+                .constraints([Constraint::Min(0), Constraint::Length(footer_height)])
                 .split(frame.area());
             let (content, footer) = (chunks[0], chunks[1]);
 
@@ -110,13 +119,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
                 }
                 Screen::Quit => {}
             }
-            if let Some(pending) = &state.pending_delete {
-                ui::help::draw_footer_text(frame, footer, &ui::branch_list::confirm_prompt(pending));
-            } else if let Some(err) = &state.last_error {
-                ui::help::draw_footer_text(frame, footer, &format!("Error: {err}"));
-            } else {
-                ui::help::draw_footer(frame, footer, &state.screen);
-            }
+            ui::help::draw_footer_text(frame, footer, &footer_str);
         })?;
 
         // drive execution forward automatically while on the Execution screen
