@@ -88,6 +88,7 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode, modifiers: Key
         }
         KeyCode::Char('p') => {
             state.pending_push = true;
+            state.pending_push_count = git::commits_ahead_of_remote_master(&state.cwd, &state.base).ok();
         }
         KeyCode::Enter => {
             if let Some(branch) = visible_branches(state).get(state.branch_cursor) {
@@ -140,7 +141,11 @@ fn handle_key_search(state: &mut AppState, key: KeyCode) {
 
 /// Prompt text for the footer while a push confirmation is pending.
 pub fn push_confirm_prompt(state: &AppState) -> String {
-    format!("Push '{}' to origin/master? y/n", state.base)
+    match state.pending_push_count {
+        Some(1) => format!("Push '{}' to origin/master (1 commit)? y/n", state.base),
+        Some(n) => format!("Push '{}' to origin/master ({n} commits)? y/n", state.base),
+        None => format!("Push '{}' to origin/master? y/n", state.base),
+    }
 }
 
 /// Handles a key press while a push confirmation is pending. Mirrors
@@ -157,9 +162,11 @@ pub fn handle_key_push_confirm(state: &mut AppState, key: KeyCode) -> bool {
                 Err(e) => state.last_error = Some(e.to_string()),
             }
             state.pending_push = false;
+            state.pending_push_count = None;
         }
         KeyCode::Char('n') | KeyCode::Esc => {
             state.pending_push = false;
+            state.pending_push_count = None;
         }
         _ => {}
     }
@@ -560,6 +567,30 @@ mod tests {
         let mut state = state_with_branches(&["a"]);
         handle_key_branch_list(&mut state, KeyCode::Char('p'), KeyModifiers::NONE);
         assert!(state.pending_push);
+    }
+
+    #[test]
+    fn p_computes_how_many_commits_would_be_pushed() {
+        use std::process::Command;
+        let (_dir, cwd) = init_repo();
+        let remote_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "-q", "--bare"]).current_dir(remote_dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_dir.path().to_str().unwrap()])
+            .current_dir(&cwd)
+            .status()
+            .unwrap();
+        Command::new("git").args(["push", "-q", "origin", "HEAD:master"]).current_dir(&cwd).status().unwrap();
+        Command::new("git").args(["fetch", "-q", "origin"]).current_dir(&cwd).status().unwrap();
+        std::fs::write(cwd.join("b.txt"), "b").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(&cwd).status().unwrap();
+        Command::new("git").args(["commit", "-q", "-m", "b"]).current_dir(&cwd).status().unwrap();
+
+        let mut state = AppState::new(cwd, "HEAD".into(), vec![]);
+        handle_key_branch_list(&mut state, KeyCode::Char('p'), KeyModifiers::NONE);
+
+        assert_eq!(state.pending_push_count, Some(1));
+        assert!(push_confirm_prompt(&state).contains("1 commit)"));
     }
 
     #[test]

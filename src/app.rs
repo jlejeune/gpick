@@ -84,6 +84,11 @@ pub struct AppState {
     pub show_all_branches: bool,
     /// Set with `p` on the branch list; confirmed with y/n like a delete.
     pub pending_push: bool,
+    /// How many commits would land on origin/master if the pending push
+    /// runs, computed once when `p` is pressed. `None` if that count
+    /// couldn't be determined (e.g. no `origin/master` yet) — the prompt
+    /// just omits it rather than blocking the push over it.
+    pub pending_push_count: Option<usize>,
     /// Names of branches multi-selected with Space on the branch list, for
     /// a bulk-delete via Delete.
     pub selected_branches: HashSet<String>,
@@ -117,6 +122,7 @@ impl AppState {
             fully_picked: HashSet::new(),
             show_all_branches: false,
             pending_push: false,
+            pending_push_count: None,
             selected_branches: HashSet::new(),
             range_anchor: None,
             selected_branch: None,

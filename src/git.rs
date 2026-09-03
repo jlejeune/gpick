@@ -122,6 +122,14 @@ pub fn push_to_master(cwd: &Path, base: &str) -> Result<(), GitError> {
     run_git(cwd, &["push", "origin", &format!("{base}:master")]).map(|_| ())
 }
 
+/// How many commits `base` is ahead of `origin/master` — how many would
+/// land on the remote if `push_to_master` runs right now.
+pub fn commits_ahead_of_remote_master(cwd: &Path, base: &str) -> Result<usize, GitError> {
+    let range = format!("origin/master..{base}");
+    let out = run_git(cwd, &["rev-list", "--count", "--end-of-options", &range])?;
+    out.parse().map_err(|_| GitError::CommandFailed(format!("unexpected rev-list output: {out}")))
+}
+
 pub fn detect_base(cwd: &Path, override_ref: Option<&str>) -> Result<String, GitError> {
     if let Some(r) = override_ref {
         return Ok(r.to_string());
@@ -504,6 +512,28 @@ mod tests {
 
         let remote_master = run_git(remote_dir.path(), &["rev-parse", "master"]).unwrap();
         assert_eq!(remote_master, head_sha);
+    }
+
+    #[test]
+    fn commits_ahead_of_remote_master_counts_unpushed_commits() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        let remote_dir = TempDir::new().unwrap();
+        Command::new("git").args(["init", "-q", "--bare"]).current_dir(remote_dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_dir.path().to_str().unwrap()])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        Command::new("git").args(["push", "-q", "origin", "HEAD:master"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["fetch", "-q", "origin"]).current_dir(dir.path()).status().unwrap();
+
+        assert_eq!(commits_ahead_of_remote_master(dir.path(), "HEAD").unwrap(), 0);
+
+        commit_file(&dir, "b.txt", "b");
+        commit_file(&dir, "c.txt", "c");
+
+        assert_eq!(commits_ahead_of_remote_master(dir.path(), "HEAD").unwrap(), 2);
     }
 
     #[test]
