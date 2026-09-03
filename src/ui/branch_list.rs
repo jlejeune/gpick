@@ -51,7 +51,6 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode, modifiers: Key
             state.branch_cursor = state.branch_cursor.saturating_sub(1);
         }
         KeyCode::Char('q') => state.screen = Screen::Quit,
-        KeyCode::Esc => state.screen = Screen::Quit,
         KeyCode::Delete => {
             if !state.selected_branches.is_empty() {
                 let mut names: Vec<String> = state.selected_branches.iter().cloned().collect();
@@ -534,8 +533,13 @@ mod tests {
         handle_key_branch_list(&mut state, KeyCode::Esc, KeyModifiers::NONE);
         assert!(!state.search_active);
         assert_eq!(state.branch_filter, "");
-        // Esc while NOT in search mode still quits, but while in search mode
-        // it must not have quit the app instead of cancelling the search.
+        assert_eq!(state.screen, Screen::BranchList);
+    }
+
+    #[test]
+    fn esc_no_longer_quits_the_branch_list() {
+        let mut state = state_with_branches(&["a"]);
+        handle_key_branch_list(&mut state, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(state.screen, Screen::BranchList);
     }
 

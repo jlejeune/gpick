@@ -31,7 +31,7 @@ fn abort_and_return_to_commit_list(state: &mut AppState) {
 pub fn handle_key_conflict_pause(state: &mut AppState, key: KeyCode) -> Result<(), GitError> {
     let reason = state.pause_reason.unwrap_or(PauseReason::CherryPickConflict);
     match key {
-        KeyCode::Char('q') | KeyCode::Esc => {
+        KeyCode::Char('q') => {
             state.screen = Screen::Quit;
         }
         KeyCode::Char('a') => match reason {
@@ -260,10 +260,10 @@ mod tests {
     }
 
     #[test]
-    fn esc_quits_from_conflict_pause() {
+    fn esc_no_longer_quits_from_conflict_pause() {
         let (_dir, mut state) = conflicted_state();
         handle_key_conflict_pause(&mut state, KeyCode::Esc).unwrap();
-        assert_eq!(state.screen, Screen::Quit);
+        assert_eq!(state.screen, Screen::ConflictPause);
     }
 
     #[test]
