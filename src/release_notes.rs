@@ -4,17 +4,22 @@ fn is_repo_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
 }
 
-/// True if `s` is exactly two non-empty `owner/repo`-shaped segments — not
-/// a registry path like `ghcr.io/org/name` (which has an extra segment and
-/// would resolve to the wrong GitHub repo if guessed at).
-fn looks_like_owner_repo(s: &str) -> bool {
-    let mut parts = s.split('/');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(a), Some(b), None) => {
-            !a.is_empty() && !b.is_empty() && a.chars().all(is_repo_char) && b.chars().all(is_repo_char)
-        }
-        _ => false,
+/// Takes the last two `/`-separated segments of `s` as an `owner/repo`
+/// guess — handles both a bare `owner/repo` and a registry-prefixed path
+/// like `ghcr.io/owner/repo` or `lscr.io/owner/repo`, which is how most
+/// self-hosted app images happen to mirror their GitHub repo. A wrong
+/// guess (e.g. `registry.k8s.io/external-dns/external-dns`, whose real
+/// repo is `kubernetes-sigs/external-dns`) just 404s later — never shows
+/// content, so guessing wrong here is safe, only guessing nothing costs.
+fn extract_owner_repo(s: &str) -> Option<String> {
+    let segments: Vec<&str> = s.split('/').collect();
+    if segments.len() < 2 {
+        return None;
     }
+    let owner = segments[segments.len() - 2];
+    let repo = segments[segments.len() - 1];
+    let valid = |s: &str| !s.is_empty() && s.chars().all(is_repo_char);
+    (valid(owner) && valid(repo)).then(|| format!("{owner}/{repo}"))
 }
 
 /// True if `s` (optionally `v`-prefixed) looks like a version number:
@@ -29,17 +34,16 @@ fn looks_like_version(s: &str) -> bool {
 }
 
 /// Parses a Renovate-style commit title — e.g. "chore(deps): update
-/// lissy93/dashy docker tag to v4.6.9" — into `("lissy93/dashy",
-/// "4.6.9")`. Returns `None` whenever the title doesn't clearly encode
-/// both an `owner/repo` pair and a version (e.g. a helm chart bump with
-/// no repo path, or a registry path like `ghcr.io/org/name` that isn't a
-/// bare GitHub `owner/repo`) — skipping silently beats guessing wrong.
+/// ghcr.io/authelia/authelia docker tag to v4.39.22" — into
+/// `("authelia/authelia", "4.39.22")`. Returns `None` whenever the title
+/// has no `/`-containing token at all (e.g. a helm chart bump with just a
+/// bare chart name) or no trailing version.
 pub fn parse_version_bump(message: &str) -> Option<(String, String)> {
     let title = message.lines().next()?;
     let words: Vec<&str> = title.split_whitespace().collect();
     let version = words.last().filter(|w| looks_like_version(w))?;
     let version = version.trim_start_matches('v').to_string();
-    let owner_repo = words.iter().find(|w| looks_like_owner_repo(w))?.to_string();
+    let owner_repo = words.iter().find_map(|w| extract_owner_repo(w))?;
     Some((owner_repo, version))
 }
 
@@ -91,10 +95,14 @@ mod tests {
     }
 
     #[test]
-    fn returns_none_for_a_registry_path_with_an_extra_segment() {
+    fn parses_a_registry_prefixed_docker_tag_by_taking_the_last_two_segments() {
         assert_eq!(
-            parse_version_bump("chore(deps): update registry.k8s.io/external-dns/external-dns docker tag to v0.14.0"),
-            None
+            parse_version_bump("chore(deps): update ghcr.io/authelia/authelia docker tag to v4.39.22"),
+            Some(("authelia/authelia".to_string(), "4.39.22".to_string()))
+        );
+        assert_eq!(
+            parse_version_bump("chore(deps): update lscr.io/linuxserver/code-server docker tag to v4.1.0"),
+            Some(("linuxserver/code-server".to_string(), "4.1.0".to_string()))
         );
     }
 
