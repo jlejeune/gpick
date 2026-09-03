@@ -233,7 +233,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
 
                 match state.screen {
                     Screen::BranchList => {
-                        ui::branch_list::handle_key_branch_list(state, key.code);
+                        ui::branch_list::handle_key_branch_list(state, key.code, key.modifiers);
                         if state.screen == Screen::CommitList {
                             if let Some(branch) = state.selected_branch.clone() {
                                 load_commits_for_branch(state, &branch);

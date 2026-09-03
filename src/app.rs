@@ -72,6 +72,9 @@ pub struct AppState {
     /// Names of branches multi-selected with Space on the branch list, for
     /// a bulk-delete via Delete.
     pub selected_branches: HashSet<String>,
+    /// Cursor index where a Shift+Up/Down range selection started; reset
+    /// to `None` by any other key so a later range starts fresh.
+    pub range_anchor: Option<usize>,
     pub selected_branch: Option<String>,
     pub commits: Vec<git::Commit>,
     pub commit_cursor: usize,
@@ -99,6 +102,7 @@ impl AppState {
             show_all_branches: false,
             pending_push: false,
             selected_branches: HashSet::new(),
+            range_anchor: None,
             selected_branch: None,
             commits: Vec::new(),
             commit_cursor: 0,

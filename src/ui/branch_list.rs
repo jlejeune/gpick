@@ -1,7 +1,7 @@
 use crate::app::{AppState, PendingDelete, Screen};
 use crate::git::{self, Branch};
 use crate::ui::theme;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::{List, ListItem, ListState};
 
@@ -15,14 +15,33 @@ pub fn visible_branches(state: &AppState) -> Vec<&Branch> {
         .collect()
 }
 
-pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
+pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode, modifiers: KeyModifiers) {
     if state.search_active {
         handle_key_search(state, key);
         return;
     }
 
+    let shift_arrow = modifiers.contains(KeyModifiers::SHIFT) && matches!(key, KeyCode::Down | KeyCode::Up);
+    if !shift_arrow {
+        state.range_anchor = None;
+    }
+
     let visible_len = visible_branches(state).len();
     match key {
+        KeyCode::Down if shift_arrow => {
+            let anchor = state.range_anchor.unwrap_or(state.branch_cursor);
+            state.range_anchor = Some(anchor);
+            if visible_len > 0 && state.branch_cursor + 1 < visible_len {
+                state.branch_cursor += 1;
+            }
+            select_range(state, anchor, state.branch_cursor);
+        }
+        KeyCode::Up if shift_arrow => {
+            let anchor = state.range_anchor.unwrap_or(state.branch_cursor);
+            state.range_anchor = Some(anchor);
+            state.branch_cursor = state.branch_cursor.saturating_sub(1);
+            select_range(state, anchor, state.branch_cursor);
+        }
         KeyCode::Down => {
             if visible_len > 0 && state.branch_cursor + 1 < visible_len {
                 state.branch_cursor += 1;
@@ -75,6 +94,20 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
         }
         _ => {}
     }
+}
+
+/// Adds every visible branch between indices `from` and `to` (inclusive,
+/// either order) to the multi-selection — used by Shift+Up/Down to extend
+/// a contiguous range from the anchor to the current cursor.
+fn select_range(state: &mut AppState, from: usize, to: usize) {
+    let (lo, hi) = if from <= to { (from, to) } else { (to, from) };
+    let names: Vec<String> = visible_branches(state)
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| *i >= lo && *i <= hi)
+        .map(|(_, b)| b.name.clone())
+        .collect();
+    state.selected_branches.extend(names);
 }
 
 /// Handles input while the search field (entered with `/`) is active.
@@ -334,26 +367,71 @@ mod tests {
     #[test]
     fn down_moves_cursor_and_clamps_at_end() {
         let mut state = state_with_branches(&["a", "b"]);
-        handle_key_branch_list(&mut state, KeyCode::Down);
+        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::NONE);
         assert_eq!(state.branch_cursor, 1);
-        handle_key_branch_list(&mut state, KeyCode::Down);
+        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::NONE);
         assert_eq!(state.branch_cursor, 1); // clamped
     }
 
     #[test]
     fn up_clamps_at_zero() {
         let mut state = state_with_branches(&["a", "b"]);
-        handle_key_branch_list(&mut state, KeyCode::Up);
+        handle_key_branch_list(&mut state, KeyCode::Up, KeyModifiers::NONE);
         assert_eq!(state.branch_cursor, 0);
+    }
+
+    #[test]
+    fn shift_down_extends_a_contiguous_range_selection() {
+        let mut state = state_with_branches(&["a", "b", "c", "d"]);
+        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::SHIFT);
+        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::SHIFT);
+        assert_eq!(state.branch_cursor, 2);
+        assert_eq!(
+            state.selected_branches,
+            ["a", "b", "c"].iter().map(|s| s.to_string()).collect()
+        );
+    }
+
+    #[test]
+    fn shift_up_extends_the_range_upward_from_the_anchor() {
+        let mut state = state_with_branches(&["a", "b", "c", "d"]);
+        state.branch_cursor = 3;
+        handle_key_branch_list(&mut state, KeyCode::Up, KeyModifiers::SHIFT);
+        handle_key_branch_list(&mut state, KeyCode::Up, KeyModifiers::SHIFT);
+        assert_eq!(state.branch_cursor, 1);
+        assert_eq!(
+            state.selected_branches,
+            ["b", "c", "d"].iter().map(|s| s.to_string()).collect()
+        );
+    }
+
+    #[test]
+    fn plain_arrow_after_shift_range_resets_the_anchor() {
+        let mut state = state_with_branches(&["a", "b", "c"]);
+        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::SHIFT);
+        assert!(state.range_anchor.is_some());
+        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::NONE);
+        assert!(state.range_anchor.is_none());
+    }
+
+    #[test]
+    fn a_new_shift_range_starts_fresh_from_the_current_cursor() {
+        let mut state = state_with_branches(&["a", "b", "c", "d"]);
+        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::SHIFT); // selects a,b
+        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::NONE); // plain move, resets anchor, cursor -> 2 (c)
+        state.selected_branches.clear();
+        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::SHIFT); // new range c,d
+
+        assert_eq!(state.selected_branches, ["c", "d"].iter().map(|s| s.to_string()).collect());
     }
 
     #[test]
     fn slash_enters_search_mode_and_typing_filters_visible_branches() {
         let mut state = state_with_branches(&["feature-x", "bugfix-y"]);
-        handle_key_branch_list(&mut state, KeyCode::Char('/'));
+        handle_key_branch_list(&mut state, KeyCode::Char('/'), KeyModifiers::NONE);
         assert!(state.search_active);
-        handle_key_branch_list(&mut state, KeyCode::Char('f'));
-        handle_key_branch_list(&mut state, KeyCode::Char('e'));
+        handle_key_branch_list(&mut state, KeyCode::Char('f'), KeyModifiers::NONE);
+        handle_key_branch_list(&mut state, KeyCode::Char('e'), KeyModifiers::NONE);
         let visible = visible_branches(&state);
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].name, "feature-x");
@@ -362,7 +440,7 @@ mod tests {
     #[test]
     fn typing_without_search_mode_does_not_filter() {
         let mut state = state_with_branches(&["feature-x", "bugfix-y"]);
-        handle_key_branch_list(&mut state, KeyCode::Char('f'));
+        handle_key_branch_list(&mut state, KeyCode::Char('f'), KeyModifiers::NONE);
         assert_eq!(state.branch_filter, "");
         assert_eq!(visible_branches(&state).len(), 2);
     }
@@ -370,9 +448,9 @@ mod tests {
     #[test]
     fn enter_exits_search_mode_and_keeps_the_filter() {
         let mut state = state_with_branches(&["feature-x", "bugfix-y"]);
-        handle_key_branch_list(&mut state, KeyCode::Char('/'));
-        handle_key_branch_list(&mut state, KeyCode::Char('f'));
-        handle_key_branch_list(&mut state, KeyCode::Enter);
+        handle_key_branch_list(&mut state, KeyCode::Char('/'), KeyModifiers::NONE);
+        handle_key_branch_list(&mut state, KeyCode::Char('f'), KeyModifiers::NONE);
+        handle_key_branch_list(&mut state, KeyCode::Enter, KeyModifiers::NONE);
         assert!(!state.search_active);
         assert_eq!(state.branch_filter, "f");
     }
@@ -380,9 +458,9 @@ mod tests {
     #[test]
     fn esc_exits_search_mode_and_clears_the_filter() {
         let mut state = state_with_branches(&["feature-x", "bugfix-y"]);
-        handle_key_branch_list(&mut state, KeyCode::Char('/'));
-        handle_key_branch_list(&mut state, KeyCode::Char('f'));
-        handle_key_branch_list(&mut state, KeyCode::Esc);
+        handle_key_branch_list(&mut state, KeyCode::Char('/'), KeyModifiers::NONE);
+        handle_key_branch_list(&mut state, KeyCode::Char('f'), KeyModifiers::NONE);
+        handle_key_branch_list(&mut state, KeyCode::Esc, KeyModifiers::NONE);
         assert!(!state.search_active);
         assert_eq!(state.branch_filter, "");
         // Esc while NOT in search mode still quits, but while in search mode
@@ -394,9 +472,9 @@ mod tests {
     fn a_toggles_show_all_branches() {
         let mut state = state_with_branches(&["a"]);
         assert!(!state.show_all_branches);
-        handle_key_branch_list(&mut state, KeyCode::Char('a'));
+        handle_key_branch_list(&mut state, KeyCode::Char('a'), KeyModifiers::NONE);
         assert!(state.show_all_branches);
-        handle_key_branch_list(&mut state, KeyCode::Char('a'));
+        handle_key_branch_list(&mut state, KeyCode::Char('a'), KeyModifiers::NONE);
         assert!(!state.show_all_branches);
     }
 
@@ -416,7 +494,7 @@ mod tests {
     #[test]
     fn p_sets_pending_push() {
         let mut state = state_with_branches(&["a"]);
-        handle_key_branch_list(&mut state, KeyCode::Char('p'));
+        handle_key_branch_list(&mut state, KeyCode::Char('p'), KeyModifiers::NONE);
         assert!(state.pending_push);
     }
 
@@ -462,26 +540,26 @@ mod tests {
     #[test]
     fn space_toggles_branch_multi_selection() {
         let mut state = state_with_branches(&["a", "b"]);
-        handle_key_branch_list(&mut state, KeyCode::Char(' '));
+        handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE);
         assert!(state.selected_branches.contains("a"));
-        handle_key_branch_list(&mut state, KeyCode::Char(' '));
+        handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE);
         assert!(!state.selected_branches.contains("a"));
     }
 
     #[test]
     fn delete_with_multi_selection_sets_pending_bulk_delete() {
         let mut state = state_with_branches(&["a", "b", "c"]);
-        handle_key_branch_list(&mut state, KeyCode::Char(' ')); // select a
-        handle_key_branch_list(&mut state, KeyCode::Down);
-        handle_key_branch_list(&mut state, KeyCode::Char(' ')); // select b
-        handle_key_branch_list(&mut state, KeyCode::Delete);
+        handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE); // select a
+        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::NONE);
+        handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE); // select b
+        handle_key_branch_list(&mut state, KeyCode::Delete, KeyModifiers::NONE);
         assert_eq!(state.pending_delete, Some(PendingDelete::Bulk(vec!["a".to_string(), "b".to_string()])));
     }
 
     #[test]
     fn delete_without_multi_selection_still_targets_the_hovered_branch() {
         let mut state = state_with_branches(&["a", "b"]);
-        handle_key_branch_list(&mut state, KeyCode::Delete);
+        handle_key_branch_list(&mut state, KeyCode::Delete, KeyModifiers::NONE);
         assert_eq!(state.pending_delete, Some(PendingDelete::Local("a".to_string())));
     }
 
@@ -533,8 +611,8 @@ mod tests {
     #[test]
     fn enter_selects_branch_and_moves_to_commit_list() {
         let mut state = state_with_branches(&["a", "b"]);
-        handle_key_branch_list(&mut state, KeyCode::Down);
-        handle_key_branch_list(&mut state, KeyCode::Enter);
+        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::NONE);
+        handle_key_branch_list(&mut state, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(state.selected_branch, Some("b".to_string()));
         assert_eq!(state.screen, Screen::CommitList);
     }
@@ -542,14 +620,14 @@ mod tests {
     #[test]
     fn q_quits() {
         let mut state = state_with_branches(&["a"]);
-        handle_key_branch_list(&mut state, KeyCode::Char('q'));
+        handle_key_branch_list(&mut state, KeyCode::Char('q'), KeyModifiers::NONE);
         assert_eq!(state.screen, Screen::Quit);
     }
 
     #[test]
     fn delete_key_on_local_branch_sets_pending_local_delete() {
         let mut state = state_with_branches(&["a", "b"]);
-        handle_key_branch_list(&mut state, KeyCode::Delete);
+        handle_key_branch_list(&mut state, KeyCode::Delete, KeyModifiers::NONE);
         assert_eq!(state.pending_delete, Some(PendingDelete::Local("a".to_string())));
     }
 
@@ -560,14 +638,14 @@ mod tests {
             "main".into(),
             vec![Branch { name: "origin/feature".into(), last_commit_epoch: 0, is_local: false }],
         );
-        handle_key_branch_list(&mut state, KeyCode::Delete);
+        handle_key_branch_list(&mut state, KeyCode::Delete, KeyModifiers::NONE);
         assert_eq!(state.pending_delete, Some(PendingDelete::Remote("origin/feature".to_string())));
     }
 
     #[test]
     fn char_d_outside_search_mode_does_nothing() {
         let mut state = state_with_branches(&["dev", "feature"]);
-        handle_key_branch_list(&mut state, KeyCode::Char('d'));
+        handle_key_branch_list(&mut state, KeyCode::Char('d'), KeyModifiers::NONE);
         assert_eq!(state.branch_filter, "");
         assert_eq!(state.pending_delete, None);
         assert_eq!(visible_branches(&state).len(), 2);
