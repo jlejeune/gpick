@@ -178,21 +178,22 @@ pub fn empty_pick_shas(cwd: &Path, base: &str, branch: &str) -> Result<std::coll
         .collect())
 }
 
-/// True if `branch` has at least one commit ahead of `base` and every one
-/// of them would cherry-pick as empty — the whole branch is already
-/// integrated and not worth showing as a pick candidate.
+/// True if there is nothing worth cherry-picking from `branch`: either it
+/// has no commits ahead of `base` at all (e.g. a worktree branch that never
+/// diverged), or every commit it does have would cherry-pick as empty
+/// because it's already integrated on base.
 pub fn is_fully_picked(cwd: &Path, base: &str, branch: &str) -> Result<bool, GitError> {
     let commits = list_commits(cwd, base, branch)?;
     if commits.is_empty() {
-        return Ok(false);
+        return Ok(true);
     }
     let empty = empty_pick_shas(cwd, base, branch)?;
     Ok(commits.iter().all(|c| empty.contains(&c.sha)))
 }
 
-/// Names of branches from `branches` that are fully picked (see
-/// `is_fully_picked`). A branch whose check errors is treated as not fully
-/// picked — showing it is a safer default than hiding it on a git error.
+/// Names of branches from `branches` with nothing worth cherry-picking (see
+/// `is_fully_picked`). A branch whose check errors is treated as pickable —
+/// showing it is a safer default than hiding it on a git error.
 pub fn fully_picked_branches(cwd: &Path, base: &str, branches: &[Branch]) -> std::collections::HashSet<String> {
     branches
         .iter()
@@ -520,13 +521,13 @@ mod tests {
     }
 
     #[test]
-    fn is_fully_picked_false_when_branch_has_no_commits_ahead() {
+    fn is_fully_picked_true_when_branch_has_no_commits_ahead() {
         let dir = init_repo();
         commit_file(&dir, "base.txt", "base");
         let base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
         Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
 
-        assert!(!is_fully_picked(dir.path(), &base_sha, "feature").unwrap());
+        assert!(is_fully_picked(dir.path(), &base_sha, "feature").unwrap());
     }
 
     #[test]
