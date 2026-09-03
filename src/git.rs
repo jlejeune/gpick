@@ -157,6 +157,21 @@ pub fn show_commit(cwd: &Path, sha: &str) -> Result<String, GitError> {
     run_git(cwd, &["show", "--end-of-options", sha])
 }
 
+/// Full SHAs of commits on `branch` (ahead of `base`) whose patch is
+/// already equivalent to a commit on `base` — cherry-picking them would
+/// produce an empty commit. Uses `git cherry`, which compares patch-ids
+/// rather than requiring the commit to actually be applied.
+pub fn empty_pick_shas(cwd: &Path, base: &str, branch: &str) -> Result<std::collections::HashSet<String>, GitError> {
+    let out = run_git(cwd, &["cherry", "--end-of-options", base, branch])?;
+    Ok(out
+        .lines()
+        .filter_map(|line| {
+            let (sign, sha) = line.split_once(' ')?;
+            (sign == "-").then(|| sha.trim().to_string())
+        })
+        .collect())
+}
+
 #[derive(Debug)]
 pub enum CherryPickOutcome {
     Success,
@@ -428,6 +443,32 @@ mod tests {
         let sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
         let out = show_commit(dir.path(), &sha).unwrap();
         assert!(out.contains("a.txt"));
+    }
+
+    #[test]
+    fn empty_pick_shas_flags_a_commit_already_equivalent_on_base() {
+        let dir = init_repo();
+        commit_file(&dir, "base.txt", "base");
+        let base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "shared.txt", "shared change");
+        commit_file(&dir, "unique.txt", "unique change");
+        let shared_sha = run_git(dir.path(), &["rev-parse", "HEAD~1"]).unwrap();
+        let unique_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        // apply the same change directly on base with a different commit
+        // message, so its patch-id matches `shared_sha` (same diff) even
+        // though it's a genuinely different commit object
+        Command::new("git").args(["checkout", "-q", &base_sha]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("shared.txt"), "shared change").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["commit", "-q", "-m", "applied directly on base"]).current_dir(dir.path()).status().unwrap();
+        let new_base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        assert_ne!(new_base_sha, shared_sha, "test setup bug: commits should differ");
+
+        let empty = empty_pick_shas(dir.path(), &new_base_sha, "feature").unwrap();
+        assert!(empty.contains(&shared_sha), "expected {shared_sha} to be flagged as empty, got {empty:?}");
+        assert!(!empty.contains(&unique_sha));
     }
 
     #[test]
