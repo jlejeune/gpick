@@ -85,7 +85,7 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode, modifiers: Key
             state.show_all_branches = !state.show_all_branches;
             state.branch_cursor = 0;
         }
-        KeyCode::Char('p') => {
+        KeyCode::Char('p') if state.push_ahead_count != Some(0) => {
             state.pending_push = true;
             state.pending_push_count = git::commits_ahead_of_remote_master(&state.cwd, &state.base).ok();
         }
@@ -157,7 +157,10 @@ pub fn handle_key_push_confirm(state: &mut AppState, key: KeyCode) -> bool {
     match key {
         KeyCode::Char('y') => {
             match git::push_to_master(&state.cwd, &state.base) {
-                Ok(()) => state.last_error = None,
+                Ok(()) => {
+                    state.last_error = None;
+                    state.push_ahead_count = git::commits_ahead_of_remote_master(&state.cwd, &state.base).ok();
+                }
                 Err(e) => state.last_error = Some(e.to_string()),
             }
             state.pending_push = false;
@@ -569,6 +572,22 @@ mod tests {
     #[test]
     fn p_sets_pending_push() {
         let mut state = state_with_branches(&["a"]);
+        handle_key_branch_list(&mut state, KeyCode::Char('p'), KeyModifiers::NONE);
+        assert!(state.pending_push);
+    }
+
+    #[test]
+    fn p_does_nothing_when_there_is_nothing_to_push() {
+        let mut state = state_with_branches(&["a"]);
+        state.push_ahead_count = Some(0);
+        handle_key_branch_list(&mut state, KeyCode::Char('p'), KeyModifiers::NONE);
+        assert!(!state.pending_push);
+    }
+
+    #[test]
+    fn p_still_works_when_the_ahead_count_is_unknown() {
+        let mut state = state_with_branches(&["a"]);
+        state.push_ahead_count = None;
         handle_key_branch_list(&mut state, KeyCode::Char('p'), KeyModifiers::NONE);
         assert!(state.pending_push);
     }

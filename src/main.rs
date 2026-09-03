@@ -55,6 +55,8 @@ fn return_to_branch_list_after_execution(state: &mut AppState) {
             state.fully_picked.insert(branch.clone());
         }
     }
+    // the run just landed commits on base, which may change what's left to push
+    state.push_ahead_count = git::commits_ahead_of_remote_master(&state.cwd, &state.base).ok();
     state.commits.clear();
     state.commit_cursor = 0;
     state.selected.clear();
@@ -131,6 +133,7 @@ fn main() -> io::Result<()> {
 
     let mut state = AppState::new(cwd, base, branches);
     state.fully_picked = git::fully_picked_branches(&state.cwd, &state.base, &state.branches);
+    state.push_ahead_count = git::commits_ahead_of_remote_master(&state.cwd, &state.base).ok();
 
     install_panic_hook();
     enable_raw_mode()?;
@@ -199,7 +202,8 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
             } else if let Some(err) = &state.last_error {
                 FooterKind::Error(format!("Error: {err}"))
             } else {
-                FooterKind::Hints(ui::help::footer_text(&state.screen).to_string())
+                let can_push = state.push_ahead_count != Some(0);
+                FooterKind::Hints(ui::help::footer_text(&state.screen, can_push))
             };
             let footer_str = match &footer_kind {
                 FooterKind::Progress(s) | FooterKind::Confirm(s) | FooterKind::Error(s) | FooterKind::Hints(s) => s.clone(),
@@ -446,5 +450,33 @@ mod tests {
         return_to_branch_list_after_execution(&mut state);
 
         assert!(state.fully_picked.contains("feature"));
+    }
+
+    #[test]
+    fn return_to_branch_list_after_execution_refreshes_push_ahead_count() {
+        use std::process::Command;
+        let dir = init_repo();
+        commit_file(&dir, "base.txt", "base", "base");
+        let remote_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "-q", "--bare"]).current_dir(remote_dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_dir.path().to_str().unwrap()])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        Command::new("git").args(["push", "-q", "origin", "HEAD:master"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["fetch", "-q", "origin"]).current_dir(dir.path()).status().unwrap();
+        // simulate a cherry-pick having just landed a new commit on base
+        commit_file(&dir, "picked.txt", "picked", "picked commit");
+
+        let mut state = AppState::new(dir.path().to_path_buf(), "HEAD".to_string(), vec![]);
+        state.push_ahead_count = Some(0); // stale, from before the pick landed
+        state.screen = Screen::Execution;
+        state.execution_queue = vec![0];
+        state.execution_index = 1;
+
+        return_to_branch_list_after_execution(&mut state);
+
+        assert_eq!(state.push_ahead_count, Some(1));
     }
 }

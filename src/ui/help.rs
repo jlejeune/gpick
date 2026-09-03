@@ -4,16 +4,23 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Wrap};
 
 /// Keybinding hints for the given screen, shown in a persistent one-line
-/// footer so a first-time user always knows what to press.
-pub fn footer_text(screen: &Screen) -> &'static str {
+/// footer so a first-time user always knows what to press. `can_push`
+/// controls whether the branch list's `p` hint is offered — hidden when
+/// there's nothing to push, so it isn't a dead-end shortcut.
+pub fn footer_text(screen: &Screen, can_push: bool) -> String {
     match screen {
         Screen::BranchList => {
-            "↑/↓ move  Shift+↑/↓ range-select  / search  a show all  Space select  Enter open  Del delete  p push to master  q quit"
+            let base = "↑/↓ move  Shift+↑/↓ range-select  / search  a show all  Space select  Enter open  Del delete";
+            if can_push {
+                format!("{base}  p push to master  q quit")
+            } else {
+                format!("{base}  q quit")
+            }
         }
-        Screen::CommitList => "↑/↓ move  Space toggle  Enter cherry-pick  q/Esc back",
-        Screen::Execution => "running…  q quit",
-        Screen::ConflictPause => "c continue (after resolving + git add)  a abort  q quit",
-        Screen::Quit => "",
+        Screen::CommitList => "↑/↓ move  Space toggle  Enter cherry-pick  q/Esc back".to_string(),
+        Screen::Execution => "running…  q quit".to_string(),
+        Screen::ConflictPause => "c continue (after resolving + git add)  a abort  q quit".to_string(),
+        Screen::Quit => String::new(),
     }
 }
 
@@ -81,9 +88,17 @@ mod tests {
             Screen::Execution,
             Screen::ConflictPause,
         ] {
-            assert!(!footer_text(&screen).is_empty(), "{screen:?} has empty footer text");
+            assert!(!footer_text(&screen, true).is_empty(), "{screen:?} has empty footer text");
         }
-        assert_eq!(footer_text(&Screen::Quit), "");
+        assert_eq!(footer_text(&Screen::Quit, true), "");
+    }
+
+    #[test]
+    fn branch_list_footer_hides_the_push_hint_when_nothing_to_push() {
+        let with_push = footer_text(&Screen::BranchList, true);
+        let without_push = footer_text(&Screen::BranchList, false);
+        assert!(with_push.contains("push to master"));
+        assert!(!without_push.contains("push to master"));
     }
 
     #[test]

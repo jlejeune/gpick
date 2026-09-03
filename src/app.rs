@@ -89,6 +89,11 @@ pub struct AppState {
     /// couldn't be determined (e.g. no `origin/master` yet) — the prompt
     /// just omits it rather than blocking the push over it.
     pub pending_push_count: Option<usize>,
+    /// Live count of commits ahead of origin/master, refreshed at startup
+    /// and whenever it might have changed (after a cherry-pick run, after
+    /// a push). Drives whether `p` is even offered — `None` (unknown, e.g.
+    /// no origin/master yet) fails open and still offers it.
+    pub push_ahead_count: Option<usize>,
     /// Names of branches multi-selected with Space on the branch list, for
     /// a bulk-delete via Delete.
     pub selected_branches: HashSet<String>,
@@ -123,6 +128,7 @@ impl AppState {
             show_all_branches: false,
             pending_push: false,
             pending_push_count: None,
+            push_ahead_count: None,
             selected_branches: HashSet::new(),
             range_anchor: None,
             selected_branch: None,
