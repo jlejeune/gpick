@@ -18,6 +18,28 @@ fn is_ctrl_c(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
+/// Loads the commits ahead of base for `branch` into `state`, filtering out
+/// any commit whose patch is already equivalent to one on base — cherry-
+/// picking those would land as an empty, useless commit. If the equivalence
+/// check itself fails, commits are shown unfiltered rather than blocking
+/// the user on an unrelated git error.
+fn load_commits_for_branch(state: &mut AppState, branch: &str) {
+    match git::list_commits(&state.cwd, &state.base, branch) {
+        Ok(commits) => {
+            state.last_error = None;
+            let commits = match git::empty_pick_shas(&state.cwd, &state.base, branch) {
+                Ok(empty) => commits.into_iter().filter(|c| !empty.contains(&c.sha)).collect(),
+                Err(_) => commits,
+            };
+            state.load_commits(commits);
+        }
+        Err(e) => {
+            state.last_error = Some(e.to_string());
+            state.load_commits(Vec::new());
+        }
+    }
+}
+
 /// Breadcrumb segments for the header bar, reflecting where the user is in
 /// the branch -> commits -> execution flow.
 fn breadcrumb_segments(state: &AppState) -> Vec<&str> {
@@ -178,16 +200,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
                         ui::branch_list::handle_key_branch_list(state, key.code);
                         if state.screen == Screen::CommitList {
                             if let Some(branch) = state.selected_branch.clone() {
-                                match git::list_commits(&state.cwd, &state.base, &branch) {
-                                    Ok(commits) => {
-                                        state.last_error = None;
-                                        state.load_commits(commits);
-                                    }
-                                    Err(e) => {
-                                        state.last_error = Some(e.to_string());
-                                        state.load_commits(Vec::new());
-                                    }
-                                }
+                                load_commits_for_branch(state, &branch);
                             }
                         }
                     }
@@ -250,5 +263,43 @@ mod tests {
         let mut state = AppState::new("/tmp".into(), "main".into(), vec![]);
         state.screen = Screen::Quit;
         assert!(breadcrumb_segments(&state).is_empty());
+    }
+
+    fn init_repo() -> tempfile::TempDir {
+        use std::process::Command;
+        let dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "-q"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["config", "user.email", "t@example.com"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["config", "user.name", "Test"]).current_dir(dir.path()).status().unwrap();
+        dir
+    }
+
+    fn commit_file(dir: &tempfile::TempDir, name: &str, content: &str, message: &str) {
+        use std::process::Command;
+        std::fs::write(dir.path().join(name), content).unwrap();
+        Command::new("git").args(["add", "."]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["commit", "-q", "-m", message]).current_dir(dir.path()).status().unwrap();
+    }
+
+    #[test]
+    fn load_commits_for_branch_filters_out_already_applied_patches() {
+        use std::process::Command;
+        let dir = init_repo();
+        commit_file(&dir, "base.txt", "base", "base");
+        let base_sha = git::run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "shared.txt", "shared change", "shared");
+        commit_file(&dir, "unique.txt", "unique change", "unique");
+        let unique_sha = git::run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        Command::new("git").args(["checkout", "-q", &base_sha]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "shared.txt", "shared change", "applied directly on base");
+        let new_base_sha = git::run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        let mut state = AppState::new(dir.path().to_path_buf(), new_base_sha, vec![]);
+        load_commits_for_branch(&mut state, "feature");
+
+        assert_eq!(state.commits.len(), 1);
+        assert_eq!(state.commits[0].sha, unique_sha);
     }
 }
