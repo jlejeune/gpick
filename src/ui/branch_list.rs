@@ -34,7 +34,12 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
         KeyCode::Char('q') => state.screen = Screen::Quit,
         KeyCode::Esc => state.screen = Screen::Quit,
         KeyCode::Delete => {
-            if let Some(b) = visible_branches(state).get(state.branch_cursor) {
+            if !state.selected_branches.is_empty() {
+                let mut names: Vec<String> = state.selected_branches.iter().cloned().collect();
+                names.sort();
+                state.pending_delete = Some(PendingDelete::Bulk(names));
+                state.last_error = None;
+            } else if let Some(b) = visible_branches(state).get(state.branch_cursor) {
                 let pending = if b.is_local {
                     PendingDelete::Local(b.name.clone())
                 } else {
@@ -42,6 +47,14 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
                 };
                 state.pending_delete = Some(pending);
                 state.last_error = None;
+            }
+        }
+        KeyCode::Char(' ') => {
+            if let Some(b) = visible_branches(state).get(state.branch_cursor) {
+                let name = b.name.clone();
+                if !state.selected_branches.remove(&name) {
+                    state.selected_branches.insert(name);
+                }
             }
         }
         KeyCode::Char('/') => {
@@ -127,6 +140,9 @@ pub fn confirm_prompt(pending: &PendingDelete) -> String {
         PendingDelete::RemoveWorktree { branch, path } => format!(
             "'{branch}' is checked out at '{path}'. Remove that worktree and retry delete? y/n"
         ),
+        PendingDelete::Bulk(names) => {
+            format!("Delete {} branches ({})? y/n", names.len(), names.join(", "))
+        }
     }
 }
 
@@ -207,6 +223,30 @@ pub fn handle_key_delete_confirm(state: &mut AppState, key: KeyCode) -> bool {
                 }
                 state.pending_delete = None;
             }
+            PendingDelete::Bulk(names) => {
+                let is_local: std::collections::HashMap<String, bool> =
+                    state.branches.iter().map(|b| (b.name.clone(), b.is_local)).collect();
+                let mut errors = Vec::new();
+                for name in &names {
+                    let result = if is_local.get(name).copied().unwrap_or(true) {
+                        git::delete_branch(&state.cwd, name)
+                    } else {
+                        let (remote, branch) = name.split_once('/').unwrap_or(("origin", name.as_str()));
+                        git::delete_remote_branch(&state.cwd, remote, branch)
+                    };
+                    match result {
+                        Ok(()) => {
+                            remove_deleted_branch(state, name);
+                            state.selected_branches.remove(name);
+                        }
+                        Err(e) => errors.push(format!("{name}: {e}")),
+                    }
+                }
+                if !errors.is_empty() {
+                    state.last_error = Some(errors.join("; "));
+                }
+                state.pending_delete = None;
+            }
         },
         KeyCode::Char('n') | KeyCode::Esc => {
             state.pending_delete = None;
@@ -245,7 +285,11 @@ pub fn draw_branch_list(frame: &mut Frame, area: Rect, state: &AppState) {
             .iter()
             .map(|b| {
                 let (marker, color) = if b.is_local { ("[L]", theme::LOCAL) } else { ("[R]", theme::REMOTE) };
+                let (check, check_color) =
+                    if state.selected_branches.contains(&b.name) { ("[x]", theme::SUCCESS) } else { ("[ ]", theme::MUTED) };
                 let line = Line::from(vec![
+                    Span::styled(check, Style::default().fg(check_color).add_modifier(Modifier::BOLD)),
+                    Span::raw(" "),
                     Span::styled(marker, Style::default().fg(color).add_modifier(Modifier::BOLD)),
                     Span::raw(" "),
                     Span::raw(b.name.clone()),
@@ -413,6 +457,77 @@ mod tests {
         assert!(state.last_error.is_none());
         let remote_master = git::run_git(remote_dir.path(), &["rev-parse", "master"]).unwrap();
         assert_eq!(remote_master, head_sha);
+    }
+
+    #[test]
+    fn space_toggles_branch_multi_selection() {
+        let mut state = state_with_branches(&["a", "b"]);
+        handle_key_branch_list(&mut state, KeyCode::Char(' '));
+        assert!(state.selected_branches.contains("a"));
+        handle_key_branch_list(&mut state, KeyCode::Char(' '));
+        assert!(!state.selected_branches.contains("a"));
+    }
+
+    #[test]
+    fn delete_with_multi_selection_sets_pending_bulk_delete() {
+        let mut state = state_with_branches(&["a", "b", "c"]);
+        handle_key_branch_list(&mut state, KeyCode::Char(' ')); // select a
+        handle_key_branch_list(&mut state, KeyCode::Down);
+        handle_key_branch_list(&mut state, KeyCode::Char(' ')); // select b
+        handle_key_branch_list(&mut state, KeyCode::Delete);
+        assert_eq!(state.pending_delete, Some(PendingDelete::Bulk(vec!["a".to_string(), "b".to_string()])));
+    }
+
+    #[test]
+    fn delete_without_multi_selection_still_targets_the_hovered_branch() {
+        let mut state = state_with_branches(&["a", "b"]);
+        handle_key_branch_list(&mut state, KeyCode::Delete);
+        assert_eq!(state.pending_delete, Some(PendingDelete::Local("a".to_string())));
+    }
+
+    #[test]
+    fn y_bulk_deletes_all_selected_local_branches() {
+        use std::process::Command;
+        let (_dir, cwd) = init_repo();
+        Command::new("git").args(["branch", "one"]).current_dir(&cwd).status().unwrap();
+        Command::new("git").args(["branch", "two"]).current_dir(&cwd).status().unwrap();
+
+        let mut state = AppState::new(
+            cwd.clone(),
+            "main".into(),
+            vec![
+                Branch { name: "one".into(), last_commit_epoch: 0, is_local: true },
+                Branch { name: "two".into(), last_commit_epoch: 0, is_local: true },
+            ],
+        );
+        state.selected_branches.insert("one".to_string());
+        state.selected_branches.insert("two".to_string());
+        state.pending_delete = Some(PendingDelete::Bulk(vec!["one".to_string(), "two".to_string()]));
+
+        handle_key_delete_confirm(&mut state, KeyCode::Char('y'));
+
+        assert_eq!(state.pending_delete, None);
+        assert!(state.branches.is_empty());
+        assert!(state.selected_branches.is_empty());
+        assert!(git::run_git(&cwd, &["branch", "--list", "one"]).unwrap().is_empty());
+        assert!(git::run_git(&cwd, &["branch", "--list", "two"]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn y_bulk_delete_reports_errors_for_branches_that_fail() {
+        let (_dir, cwd) = init_repo();
+        // "missing" doesn't actually exist locally, so its delete will fail
+        let mut state = AppState::new(
+            cwd.clone(),
+            "main".into(),
+            vec![Branch { name: "missing".into(), last_commit_epoch: 0, is_local: true }],
+        );
+        state.pending_delete = Some(PendingDelete::Bulk(vec!["missing".to_string()]));
+
+        handle_key_delete_confirm(&mut state, KeyCode::Char('y'));
+
+        assert_eq!(state.pending_delete, None);
+        assert!(state.last_error.is_some());
     }
 
     #[test]

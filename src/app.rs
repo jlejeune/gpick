@@ -46,6 +46,9 @@ pub enum PendingDelete {
     /// another worktree; confirm removing that worktree (only if it has no
     /// uncommitted changes — gpick never force-removes) and retrying.
     RemoveWorktree { branch: String, path: String },
+    /// Confirm deleting several branches at once (multi-selected with
+    /// Space), local and remote alike.
+    Bulk(Vec<String>),
 }
 
 pub struct AppState {
@@ -66,6 +69,9 @@ pub struct AppState {
     pub show_all_branches: bool,
     /// Set with `p` on the branch list; confirmed with y/n like a delete.
     pub pending_push: bool,
+    /// Names of branches multi-selected with Space on the branch list, for
+    /// a bulk-delete via Delete.
+    pub selected_branches: HashSet<String>,
     pub selected_branch: Option<String>,
     pub commits: Vec<git::Commit>,
     pub commit_cursor: usize,
@@ -92,6 +98,7 @@ impl AppState {
             fully_picked: HashSet::new(),
             show_all_branches: false,
             pending_push: false,
+            selected_branches: HashSet::new(),
             selected_branch: None,
             commits: Vec::new(),
             commit_cursor: 0,

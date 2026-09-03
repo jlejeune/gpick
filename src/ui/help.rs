@@ -8,7 +8,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 pub fn footer_text(screen: &Screen) -> &'static str {
     match screen {
         Screen::BranchList => {
-            "↑/↓ move  / search  a show all  Enter select  Del delete [L]ocal or [R]emote  p push to master  q/Esc quit"
+            "↑/↓ move  / search  a show all  Space select  Enter open  Del delete  p push to master  q/Esc quit"
         }
         Screen::CommitList => "↑/↓ move  Space toggle  Enter cherry-pick  q/Esc back",
         Screen::Execution => "running…  q quit",
