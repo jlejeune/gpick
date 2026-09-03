@@ -89,6 +89,13 @@ pub fn delete_remote_branch(cwd: &Path, remote: &str, branch: &str) -> Result<()
     run_git(cwd, &["push", remote, "--delete", branch]).map(|_| ())
 }
 
+/// Removes a stale local remote-tracking ref (e.g. `origin/foo`) without
+/// touching the actual remote — used when the branch was already deleted
+/// there and the local cache just hasn't caught up.
+pub fn prune_remote_tracking_ref(cwd: &Path, name: &str) -> Result<(), GitError> {
+    run_git(cwd, &["update-ref", "-d", &format!("refs/remotes/{name}")]).map(|_| ())
+}
+
 /// Removes a worktree. Never forces — if the worktree has uncommitted
 /// changes, git refuses and this returns that error verbatim.
 pub fn remove_worktree(cwd: &Path, path: &str) -> Result<(), GitError> {
@@ -357,6 +364,21 @@ mod tests {
 
         let branches = list_branches(dir.path()).unwrap();
         assert!(!branches.iter().any(|b| b.name == "throwaway"));
+    }
+
+    #[test]
+    fn prune_remote_tracking_ref_removes_the_local_ref_without_touching_the_remote() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        let sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        // simulate a stale remote-tracking ref: no actual "origin" remote needed,
+        // just a ref under refs/remotes/ as list_branches would have created.
+        run_git(dir.path(), &["update-ref", "refs/remotes/origin/ghost", &sha]).unwrap();
+        assert!(!run_git(dir.path(), &["for-each-ref", "refs/remotes/origin/ghost"]).unwrap().is_empty());
+
+        prune_remote_tracking_ref(dir.path(), "origin/ghost").unwrap();
+
+        assert!(run_git(dir.path(), &["for-each-ref", "refs/remotes/origin/ghost"]).unwrap().is_empty());
     }
 
     #[test]
