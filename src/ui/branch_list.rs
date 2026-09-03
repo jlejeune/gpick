@@ -75,6 +75,9 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode, modifiers: Key
                     state.selected_branches.insert(name);
                 }
             }
+            if visible_len > 0 && state.branch_cursor + 1 < visible_len {
+                state.branch_cursor += 1;
+            }
         }
         KeyCode::Char('/') => {
             state.search_active = true;
@@ -553,20 +556,36 @@ mod tests {
     }
 
     #[test]
-    fn space_toggles_branch_multi_selection() {
-        let mut state = state_with_branches(&["a", "b"]);
+    fn space_selects_the_hovered_branch_and_advances_to_the_next_one() {
+        let mut state = state_with_branches(&["a", "b", "c"]);
         handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE);
         assert!(state.selected_branches.contains("a"));
+        assert_eq!(state.branch_cursor, 1);
+    }
+
+    #[test]
+    fn space_does_not_advance_past_the_last_branch() {
+        let mut state = state_with_branches(&["a", "b"]);
+        state.branch_cursor = 1;
         handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(state.selected_branches.contains("b"));
+        assert_eq!(state.branch_cursor, 1);
+    }
+
+    #[test]
+    fn space_toggles_off_when_pressed_again_on_the_same_branch() {
+        let mut state = state_with_branches(&["a", "b"]);
+        handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE); // select a, cursor -> b
+        handle_key_branch_list(&mut state, KeyCode::Up, KeyModifiers::NONE); // back to a
+        handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE); // toggle a off
         assert!(!state.selected_branches.contains("a"));
     }
 
     #[test]
     fn delete_with_multi_selection_sets_pending_bulk_delete() {
         let mut state = state_with_branches(&["a", "b", "c"]);
-        handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE); // select a
-        handle_key_branch_list(&mut state, KeyCode::Down, KeyModifiers::NONE);
-        handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE); // select b
+        handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE); // select a, cursor -> b
+        handle_key_branch_list(&mut state, KeyCode::Char(' '), KeyModifiers::NONE); // select b, cursor -> c
         handle_key_branch_list(&mut state, KeyCode::Delete, KeyModifiers::NONE);
         assert_eq!(state.pending_delete, Some(PendingDelete::Bulk(vec!["a".to_string(), "b".to_string()])));
     }
