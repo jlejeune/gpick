@@ -18,6 +18,13 @@ fn is_ctrl_c(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
+/// Drops `base` itself from the branch list — cherry-picking base onto
+/// base is never meaningful, so unlike other "nothing to pick" branches
+/// (hidden only until `a` shows everything), this one is dropped outright.
+fn exclude_base_branch(branches: Vec<git::Branch>, base: &str) -> Vec<git::Branch> {
+    branches.into_iter().filter(|b| b.name != base).collect()
+}
+
 /// Loads the commits ahead of base for `branch` into `state`, filtering out
 /// any commit whose patch is already equivalent to one on base — cherry-
 /// picking those would land as an empty, useless commit. If the equivalence
@@ -115,7 +122,7 @@ fn main() -> io::Result<()> {
     };
 
     let branches = match git::list_branches(&cwd) {
-        Ok(b) => b,
+        Ok(b) => exclude_base_branch(b, &base),
         Err(e) => {
             eprintln!("gpick: {e}");
             std::process::exit(1);
@@ -307,6 +314,29 @@ mod tests {
     fn is_ctrl_c_does_not_match_other_control_keys() {
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
         assert!(!is_ctrl_c(&key));
+    }
+
+    #[test]
+    fn exclude_base_branch_drops_the_branch_matching_base() {
+        let branches = vec![
+            git::Branch { name: "main".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true },
+            git::Branch { name: "feature".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true },
+        ];
+        let result = exclude_base_branch(branches, "main");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "feature");
+    }
+
+    #[test]
+    fn exclude_base_branch_is_a_no_op_when_base_is_not_in_the_list() {
+        let branches = vec![git::Branch {
+            name: "feature".into(),
+            last_commit_epoch: 0,
+            last_commit_relative: String::new(),
+            is_local: true,
+        }];
+        let result = exclude_base_branch(branches, "abc123");
+        assert_eq!(result.len(), 1);
     }
 
     #[test]
