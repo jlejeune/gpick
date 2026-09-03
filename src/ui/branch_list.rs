@@ -374,6 +374,7 @@ pub fn draw_branch_list(frame: &mut Frame, area: Rect, state: &AppState) {
                     Span::styled(marker, Style::default().fg(color).add_modifier(Modifier::BOLD)),
                     Span::raw(" "),
                     Span::raw(b.name.clone()),
+                    Span::styled(format!("  · {}", b.last_commit_relative), Style::default().fg(theme::MUTED)),
                 ]);
                 ListItem::new(line)
             })
@@ -407,7 +408,7 @@ mod tests {
             "main".into(),
             names
                 .iter()
-                .map(|n| Branch { name: n.to_string(), last_commit_epoch: 0, is_local: true })
+                .map(|n| Branch { name: n.to_string(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true })
                 .collect(),
         )
     }
@@ -653,8 +654,8 @@ mod tests {
             cwd.clone(),
             "main".into(),
             vec![
-                Branch { name: "one".into(), last_commit_epoch: 0, is_local: true },
-                Branch { name: "two".into(), last_commit_epoch: 0, is_local: true },
+                Branch { name: "one".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true },
+                Branch { name: "two".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true },
             ],
         );
         state.selected_branches.insert("one".to_string());
@@ -746,7 +747,7 @@ mod tests {
         let mut state = AppState::new(
             "/tmp".into(),
             "main".into(),
-            vec![Branch { name: "origin/feature".into(), last_commit_epoch: 0, is_local: false }],
+            vec![Branch { name: "origin/feature".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: false }],
         );
         handle_key_branch_list(&mut state, KeyCode::Delete, KeyModifiers::NONE);
         assert_eq!(state.pending_delete, Some(PendingDelete::Remote("origin/feature".to_string())));
@@ -809,7 +810,7 @@ mod tests {
         let mut state = AppState::new(
             cwd.clone(),
             "main".into(),
-            vec![Branch { name: "throwaway".into(), last_commit_epoch: 0, is_local: true }],
+            vec![Branch { name: "throwaway".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true }],
         );
         state.pending_delete = Some(PendingDelete::Local("throwaway".to_string()));
 
@@ -838,7 +839,7 @@ mod tests {
         let mut state = AppState::new(
             cwd.clone(),
             "main".into(),
-            vec![Branch { name: "origin/throwaway".into(), last_commit_epoch: 0, is_local: false }],
+            vec![Branch { name: "origin/throwaway".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: false }],
         );
         state.pending_delete = Some(PendingDelete::Remote("origin/throwaway".to_string()));
 
@@ -871,7 +872,7 @@ mod tests {
         let mut state = AppState::new(
             cwd.clone(),
             "main".into(),
-            vec![Branch { name: "origin/ghost".into(), last_commit_epoch: 0, is_local: false }],
+            vec![Branch { name: "origin/ghost".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: false }],
         );
         state.pending_delete = Some(PendingDelete::Remote("origin/ghost".to_string()));
 
@@ -900,7 +901,7 @@ mod tests {
         let mut state = AppState::new(
             cwd.clone(),
             "main".into(),
-            vec![Branch { name: "feature".into(), last_commit_epoch: 0, is_local: true }],
+            vec![Branch { name: "feature".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true }],
         );
         state.pending_delete = Some(PendingDelete::Local("feature".to_string()));
 
@@ -935,7 +936,7 @@ mod tests {
         let mut state = AppState::new(
             cwd.clone(),
             "main".into(),
-            vec![Branch { name: "feature".into(), last_commit_epoch: 0, is_local: true }],
+            vec![Branch { name: "feature".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true }],
         );
         state.pending_delete = Some(PendingDelete::RemoveWorktree {
             branch: "feature".to_string(),

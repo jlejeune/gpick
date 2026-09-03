@@ -151,7 +151,7 @@ mod tests {
         let state = AppState::new(
             "/tmp".into(),
             "main".to_string(),
-            vec![Branch { name: "feature".into(), last_commit_epoch: 0, is_local: true }],
+            vec![Branch { name: "feature".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true }],
         );
         assert!(matches!(state.screen, Screen::BranchList));
         assert_eq!(state.branch_cursor, 0);

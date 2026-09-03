@@ -38,6 +38,10 @@ pub fn check_is_repo(cwd: &Path) -> Result<(), GitError> {
 pub struct Branch {
     pub name: String,
     pub last_commit_epoch: i64,
+    /// Human-readable relative date of the branch's last commit (e.g. "3
+    /// days ago"), straight from git's own `committerdate:relative` — no
+    /// date math needed on the Rust side.
+    pub last_commit_relative: String,
     pub is_local: bool,
 }
 
@@ -48,7 +52,7 @@ pub fn list_branches(cwd: &Path) -> Result<Vec<Branch>, GitError> {
         cwd,
         &[
             "for-each-ref",
-            "--format=%(refname)|%(refname:short)|%(committerdate:unix)",
+            "--format=%(refname)|%(refname:short)|%(committerdate:unix)|%(committerdate:relative)",
             "refs/heads",
             "refs/remotes",
         ],
@@ -57,16 +61,18 @@ pub fn list_branches(cwd: &Path) -> Result<Vec<Branch>, GitError> {
     let mut branches: Vec<Branch> = raw
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(3, '|');
+            let mut parts = line.splitn(4, '|');
             let full_ref = parts.next()?;
             let name = parts.next()?;
             let epoch = parts.next()?;
+            let relative = parts.next()?;
             if name == current || name.ends_with("/HEAD") {
                 return None;
             }
             Some(Branch {
                 name: name.to_string(),
                 last_commit_epoch: epoch.parse().unwrap_or(0),
+                last_commit_relative: relative.to_string(),
                 is_local: full_ref.starts_with("refs/heads/"),
             })
         })
@@ -351,6 +357,17 @@ mod tests {
     }
 
     #[test]
+    fn list_branches_includes_a_human_readable_relative_date() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        Command::new("git").args(["branch", "feature"]).current_dir(dir.path()).status().unwrap();
+
+        let branches = list_branches(dir.path()).unwrap();
+        let feature = branches.iter().find(|b| b.name == "feature").unwrap();
+        assert!(feature.last_commit_relative.contains("ago"), "got: {:?}", feature.last_commit_relative);
+    }
+
+    #[test]
     fn list_branches_marks_remote_tracking_refs_as_not_local() {
         let dir = init_repo();
         commit_file(&dir, "a.txt", "a");
@@ -615,8 +632,8 @@ mod tests {
         let new_base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
 
         let branches = vec![
-            Branch { name: "picked".into(), last_commit_epoch: 0, is_local: true },
-            Branch { name: "unpicked".into(), last_commit_epoch: 0, is_local: true },
+            Branch { name: "picked".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true },
+            Branch { name: "unpicked".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true },
         ];
         let result = fully_picked_branches(dir.path(), &new_base_sha, &branches);
 
