@@ -2,6 +2,8 @@
 name = "gpick"
 version = "0.1.0"
 edition = "2021"
+description = "Interactive TUI for cherry-picking commits between branches"
+license = "MIT"
 
 [lib]
 name = "gpick"
