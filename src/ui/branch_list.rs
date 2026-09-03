@@ -264,6 +264,9 @@ pub fn draw_branch_list(frame: &mut Frame, area: Rect, state: &AppState) {
         list_state.select(Some(state.branch_cursor));
     }
     frame.render_stateful_widget(list, area, &mut list_state);
+    if !is_empty {
+        theme::draw_scrollbar(frame, area, visible.len(), state.branch_cursor);
+    }
 }
 
 #[cfg(test)]

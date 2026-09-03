@@ -85,6 +85,9 @@ pub fn draw_commit_list(frame: &mut Frame, area: Rect, state: &AppState, preview
         .split(area);
 
     frame.render_stateful_widget(list, chunks[0], &mut list_state);
+    if !is_empty {
+        theme::draw_scrollbar(frame, chunks[0], state.commits.len(), state.commit_cursor);
+    }
     draw_preview_panel(frame, chunks[1], state, preview);
 }
 
