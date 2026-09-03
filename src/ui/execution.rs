@@ -1,7 +1,8 @@
 use crate::app::{AppState, ExecutionOutcome, PauseReason, Screen};
 use crate::git::{self, CherryPickOutcome};
+use crate::ui::theme;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{List, ListItem, Paragraph};
 
 pub fn step_execution(state: &mut AppState) {
     if state.execution_index >= state.execution_queue.len() {
@@ -53,8 +54,11 @@ pub fn step_execution(state: &mut AppState) {
 
 pub fn draw_execution(frame: &mut Frame, area: Rect, state: &AppState) {
     if state.execution_index >= state.execution_queue.len() && !state.execution_queue.is_empty() {
-        let widget = Paragraph::new("All done — press q to quit")
-            .block(Block::default().title("Execution").borders(Borders::ALL));
+        let widget = Paragraph::new(Span::styled(
+            "All done — press q to quit",
+            Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD),
+        ))
+        .block(theme::titled_block("Execution"));
         frame.render_widget(widget, area);
         return;
     }
@@ -63,15 +67,22 @@ pub fn draw_execution(frame: &mut Frame, area: Rect, state: &AppState) {
         .execution_results
         .iter()
         .map(|r| {
-            let status = match &r.outcome {
-                ExecutionOutcome::Pending => "…",
-                ExecutionOutcome::Done => "done",
-                ExecutionOutcome::Failed(_) => "failed",
+            let (glyph, color) = match &r.outcome {
+                ExecutionOutcome::Pending => ("◐", theme::PENDING),
+                ExecutionOutcome::Done => ("✓", theme::SUCCESS),
+                ExecutionOutcome::Failed(_) => ("✗", theme::ERROR),
             };
-            ListItem::new(format!("{} {} — {}", status, r.commit.short_sha, r.commit.message))
+            let line = Line::from(vec![
+                Span::styled(glyph, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+                Span::styled(r.commit.short_sha.clone(), Style::default().fg(theme::MUTED)),
+                Span::raw(" — "),
+                Span::raw(r.commit.message.clone()),
+            ]);
+            ListItem::new(line)
         })
         .collect();
-    let list = List::new(items).block(Block::default().title("Execution").borders(Borders::ALL));
+    let list = List::new(items).block(theme::titled_block("Execution"));
     frame.render_widget(list, area);
 }
 

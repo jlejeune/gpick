@@ -1,8 +1,9 @@
 use crate::app::{AppState, ExecutionOutcome, PauseReason, Screen};
 use crate::git::{self, CherryPickOutcome, GitError};
+use crate::ui::theme;
 use crossterm::event::KeyCode;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
 /// Mark the currently-paused-on commit's result entry as Done and advance.
 fn mark_current_done_and_advance(state: &mut AppState) {
@@ -92,12 +93,22 @@ pub fn handle_key_conflict_pause(state: &mut AppState, key: KeyCode) -> Result<(
 }
 
 pub fn draw_conflict_pause(frame: &mut Frame, area: Rect, state: &AppState, status: &str) {
-    let text = format!(
-        "{}\n\n{}\n\n[c] continue   [a] abort",
-        state.conflict_message.clone().unwrap_or_default(),
-        status
-    );
-    let widget = Paragraph::new(text).block(Block::default().title("Conflict").borders(Borders::ALL));
+    let lines = vec![
+        Line::from(Span::styled(
+            state.conflict_message.clone().unwrap_or_default(),
+            Style::default().fg(theme::ERROR).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(status.to_string(), Style::default().fg(theme::MUTED))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[c]", Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD)),
+            Span::raw(" continue   "),
+            Span::styled("[a]", Style::default().fg(theme::ERROR).add_modifier(Modifier::BOLD)),
+            Span::raw(" abort"),
+        ]),
+    ];
+    let widget = Paragraph::new(lines).block(theme::titled_block("Conflict"));
     frame.render_widget(widget, area);
 }
 

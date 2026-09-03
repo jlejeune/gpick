@@ -1,4 +1,5 @@
 use crate::app::Screen;
+use crate::ui::theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Wrap};
 
@@ -14,9 +15,44 @@ pub fn footer_text(screen: &Screen) -> &'static str {
     }
 }
 
+/// Splits `"key description  key description  ..."` hint text into styled
+/// spans — bold accent for the leading key token of each hint, dim for the
+/// rest — so the footer is easier to scan than one flat line.
+fn styled_footer_line(text: &str) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (i, part) in text.split("  ").enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        match part.split_once(' ') {
+            Some((key, rest)) => {
+                spans.push(Span::styled(
+                    key.to_string(),
+                    Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(rest.to_string(), Style::default().add_modifier(Modifier::DIM)));
+            }
+            None => spans.push(Span::styled(part.to_string(), Style::default().add_modifier(Modifier::DIM))),
+        }
+    }
+    Line::from(spans)
+}
+
+/// Renders the plain keybinding-hint text for the current screen, styled as
+/// bold-key/dim-action pairs.
 pub fn draw_footer_text(frame: &mut Frame, area: Rect, text: &str) {
+    let lines: Vec<Line> = text.lines().map(styled_footer_line).collect();
+    let widget = Paragraph::new(lines).wrap(Wrap { trim: true });
+    frame.render_widget(widget, area);
+}
+
+/// Renders a one-off confirmation or error message in the footer area as a
+/// single styled block, without the key/action split (there's no shortcut
+/// pattern to split — it's a sentence).
+pub fn draw_message_text(frame: &mut Frame, area: Rect, text: &str, color: Color) {
     let widget = Paragraph::new(text)
-        .style(Style::default().add_modifier(Modifier::DIM))
+        .style(Style::default().fg(color).add_modifier(Modifier::BOLD))
         .wrap(Wrap { trim: true });
     frame.render_widget(widget, area);
 }

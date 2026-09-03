@@ -1,7 +1,8 @@
 use crate::app::{AppState, ExecutionOutcome, ExecutionResult, Screen};
+use crate::ui::theme;
 use crossterm::event::KeyCode;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
 pub fn handle_key_commit_list(state: &mut AppState, key: KeyCode) {
     match key {
@@ -49,27 +50,34 @@ pub fn draw_commit_list(frame: &mut Frame, area: Rect, state: &AppState, preview
             .last_error
             .clone()
             .unwrap_or_else(|| format!("No commits ahead of {}", state.base));
-        vec![ListItem::new(msg)]
+        vec![ListItem::new(Span::styled(msg, Style::default().fg(theme::ERROR)))]
     } else {
         state
             .commits
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                let mark = if state.selected.contains(&i) { "[x]" } else { "[ ]" };
-                ListItem::new(format!("{mark} {} {} ({})", c.short_sha, c.message, c.author))
+                let (mark, mark_color) =
+                    if state.selected.contains(&i) { ("[x]", theme::SUCCESS) } else { ("[ ]", theme::MUTED) };
+                let line = Line::from(vec![
+                    Span::styled(mark, Style::default().fg(mark_color).add_modifier(Modifier::BOLD)),
+                    Span::raw(" "),
+                    Span::styled(c.short_sha.clone(), Style::default().fg(theme::MUTED)),
+                    Span::raw(" "),
+                    Span::raw(c.message.clone()),
+                ]);
+                ListItem::new(line)
             })
             .collect()
     };
     let list = List::new(items)
-        .block(Block::default().title("Commits").borders(Borders::ALL))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .block(theme::titled_block("Commits"))
+        .highlight_style(theme::highlight_style())
         .highlight_symbol("> ");
     let mut list_state = ListState::default();
     if !is_empty {
         list_state.select(Some(state.commit_cursor));
     }
-    let preview_widget = Paragraph::new(preview).block(Block::default().title("Preview").borders(Borders::ALL));
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -77,7 +85,29 @@ pub fn draw_commit_list(frame: &mut Frame, area: Rect, state: &AppState, preview
         .split(area);
 
     frame.render_stateful_widget(list, chunks[0], &mut list_state);
-    frame.render_widget(preview_widget, chunks[1]);
+    draw_preview_panel(frame, chunks[1], state, preview);
+}
+
+fn draw_preview_panel(frame: &mut Frame, area: Rect, state: &AppState, preview: &str) {
+    let block = theme::titled_block("Preview");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let header_line = match state.commits.get(state.commit_cursor) {
+        Some(c) => format!("{} · {}", c.author, c.date_rfc2822),
+        None => String::new(),
+    };
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+
+    let header = Paragraph::new(header_line).style(Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD));
+    frame.render_widget(header, rows[0]);
+
+    let diff = Paragraph::new(preview).wrap(Wrap { trim: false });
+    frame.render_widget(diff, rows[1]);
 }
 
 #[cfg(test)]

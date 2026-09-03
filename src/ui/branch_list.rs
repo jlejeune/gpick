@@ -1,8 +1,9 @@
 use crate::app::{AppState, PendingDelete, Screen};
 use crate::git::{self, Branch};
+use crate::ui::theme;
 use crossterm::event::KeyCode;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use ratatui::widgets::{List, ListItem, ListState};
 
 pub fn visible_branches(state: &AppState) -> Vec<&Branch> {
     let filter = state.branch_filter.to_lowercase();
@@ -162,13 +163,18 @@ pub fn draw_branch_list(frame: &mut Frame, area: Rect, state: &AppState) {
             .last_error
             .clone()
             .unwrap_or_else(|| "No branches found".to_string());
-        vec![ListItem::new(msg)]
+        vec![ListItem::new(Span::styled(msg, Style::default().fg(theme::ERROR)))]
     } else {
         visible
             .iter()
             .map(|b| {
-                let marker = if b.is_local { "[L]" } else { "[R]" };
-                ListItem::new(format!("{marker} {}", b.name))
+                let (marker, color) = if b.is_local { ("[L]", theme::LOCAL) } else { ("[R]", theme::REMOTE) };
+                let line = Line::from(vec![
+                    Span::styled(marker, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                    Span::raw(" "),
+                    Span::raw(b.name.clone()),
+                ]);
+                ListItem::new(line)
             })
             .collect()
     };
@@ -178,8 +184,8 @@ pub fn draw_branch_list(frame: &mut Frame, area: Rect, state: &AppState) {
         format!("Branches (base: {}, filter: {})", state.base, state.branch_filter)
     };
     let list = List::new(items)
-        .block(Block::default().title(title).borders(Borders::ALL))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .block(theme::titled_block(&title))
+        .highlight_style(theme::highlight_style())
         .highlight_symbol("> ");
     let mut list_state = ListState::default();
     if !is_empty {
