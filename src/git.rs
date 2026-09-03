@@ -95,6 +95,12 @@ pub fn remove_worktree(cwd: &Path, path: &str) -> Result<(), GitError> {
     run_git(cwd, &["worktree", "remove", path]).map(|_| ())
 }
 
+/// Pushes `base` (a local branch, ref, or commit-ish) onto `master` on the
+/// `origin` remote. This affects the shared remote.
+pub fn push_to_master(cwd: &Path, base: &str) -> Result<(), GitError> {
+    run_git(cwd, &["push", "origin", &format!("{base}:master")]).map(|_| ())
+}
+
 pub fn detect_base(cwd: &Path, override_ref: Option<&str>) -> Result<String, GitError> {
     if let Some(r) = override_ref {
         return Ok(r.to_string());
@@ -170,6 +176,18 @@ pub fn empty_pick_shas(cwd: &Path, base: &str, branch: &str) -> Result<std::coll
             (sign == "-").then(|| sha.trim().to_string())
         })
         .collect())
+}
+
+/// True if `branch` has at least one commit ahead of `base` and every one
+/// of them would cherry-pick as empty — the whole branch is already
+/// integrated and not worth showing as a pick candidate.
+pub fn is_fully_picked(cwd: &Path, base: &str, branch: &str) -> Result<bool, GitError> {
+    let commits = list_commits(cwd, base, branch)?;
+    if commits.is_empty() {
+        return Ok(false);
+    }
+    let empty = empty_pick_shas(cwd, base, branch)?;
+    Ok(commits.iter().all(|c| empty.contains(&c.sha)))
 }
 
 #[derive(Debug)]
@@ -355,6 +373,25 @@ mod tests {
     }
 
     #[test]
+    fn push_to_master_pushes_base_onto_the_remote_master_branch() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        let head_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        let remote_dir = TempDir::new().unwrap();
+        Command::new("git").args(["init", "-q", "--bare"]).current_dir(remote_dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_dir.path().to_str().unwrap()])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+
+        push_to_master(dir.path(), "HEAD").unwrap();
+
+        let remote_master = run_git(remote_dir.path(), &["rev-parse", "master"]).unwrap();
+        assert_eq!(remote_master, head_sha);
+    }
+
+    #[test]
     fn remove_worktree_removes_a_clean_worktree() {
         let dir = init_repo();
         commit_file(&dir, "a.txt", "a");
@@ -469,6 +506,44 @@ mod tests {
         let empty = empty_pick_shas(dir.path(), &new_base_sha, "feature").unwrap();
         assert!(empty.contains(&shared_sha), "expected {shared_sha} to be flagged as empty, got {empty:?}");
         assert!(!empty.contains(&unique_sha));
+    }
+
+    #[test]
+    fn is_fully_picked_false_when_branch_has_no_commits_ahead() {
+        let dir = init_repo();
+        commit_file(&dir, "base.txt", "base");
+        let base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+
+        assert!(!is_fully_picked(dir.path(), &base_sha, "feature").unwrap());
+    }
+
+    #[test]
+    fn is_fully_picked_false_when_some_commits_are_still_unique() {
+        let dir = init_repo();
+        commit_file(&dir, "base.txt", "base");
+        let base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "unique.txt", "unique change");
+
+        assert!(!is_fully_picked(dir.path(), &base_sha, "feature").unwrap());
+    }
+
+    #[test]
+    fn is_fully_picked_true_when_every_commit_is_already_applied_on_base() {
+        let dir = init_repo();
+        commit_file(&dir, "base.txt", "base");
+        let base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "shared.txt", "shared change");
+
+        Command::new("git").args(["checkout", "-q", &base_sha]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("shared.txt"), "shared change").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["commit", "-q", "-m", "applied directly on base"]).current_dir(dir.path()).status().unwrap();
+        let new_base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        assert!(is_fully_picked(dir.path(), &new_base_sha, "feature").unwrap());
     }
 
     #[test]
