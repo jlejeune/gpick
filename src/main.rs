@@ -40,6 +40,19 @@ fn load_commits_for_branch(state: &mut AppState, branch: &str) {
     }
 }
 
+/// Resets per-pick state and returns to the branch list so the user can
+/// chain another cherry-pick without restarting the program.
+fn return_to_branch_list_after_execution(state: &mut AppState) {
+    state.commits.clear();
+    state.commit_cursor = 0;
+    state.selected.clear();
+    state.execution_queue.clear();
+    state.execution_index = 0;
+    state.execution_results.clear();
+    state.selected_branch = None;
+    state.screen = Screen::BranchList;
+}
+
 /// Breadcrumb segments for the header bar, reflecting where the user is in
 /// the branch -> commits -> execution flow.
 fn breadcrumb_segments(state: &AppState) -> Vec<&str> {
@@ -121,6 +134,17 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
     loop {
         if state.screen == Screen::Quit {
             return Ok(());
+        }
+
+        // the execution queue just finished (whether by stepping through it
+        // or by resuming from a resolved conflict) — chain straight back to
+        // the branch list instead of dead-ending on an "all done" screen.
+        if state.screen == Screen::Execution
+            && !state.execution_queue.is_empty()
+            && state.execution_index >= state.execution_queue.len()
+        {
+            return_to_branch_list_after_execution(state);
+            continue;
         }
 
         // refresh preview cache when hovering a different commit on the commit list screen
@@ -205,11 +229,11 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
                         }
                     }
                     Screen::CommitList => ui::commit_list::handle_key_commit_list(state, key.code),
-                    Screen::Execution => {
-                        if key.code == KeyCode::Char('q') {
-                            state.screen = Screen::Quit;
-                        }
-                    }
+                    // Execution is never polled for input: the loop either
+                    // steps it forward or, once the queue finishes, chains
+                    // straight back to the branch list (see the top-of-loop
+                    // check above) before ever reaching event::poll here.
+                    Screen::Execution => {}
                     Screen::ConflictPause => {
                         if let Err(e) = ui::conflict_pause::handle_key_conflict_pause(state, key.code) {
                             state.conflict_message = Some(e.to_string());
@@ -301,5 +325,31 @@ mod tests {
 
         assert_eq!(state.commits.len(), 1);
         assert_eq!(state.commits[0].sha, unique_sha);
+    }
+
+    #[test]
+    fn return_to_branch_list_after_execution_resets_pick_state() {
+        let mut state = AppState::new("/tmp".into(), "main".into(), vec![]);
+        state.selected_branch = Some("feature".to_string());
+        state.commits = vec![crate::git::Commit {
+            sha: "deadbeef".into(),
+            short_sha: "deadbee".into(),
+            message: "msg".into(),
+            author: "Test".into(),
+            date_rfc2822: "Mon, 1 Jan 2024 00:00:00 +0000".into(),
+        }];
+        state.selected.insert(0);
+        state.execution_queue = vec![0];
+        state.execution_index = 1;
+        state.screen = Screen::Execution;
+
+        return_to_branch_list_after_execution(&mut state);
+
+        assert_eq!(state.screen, Screen::BranchList);
+        assert!(state.selected_branch.is_none());
+        assert!(state.commits.is_empty());
+        assert!(state.selected.is_empty());
+        assert!(state.execution_queue.is_empty());
+        assert_eq!(state.execution_index, 0);
     }
 }

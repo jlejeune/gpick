@@ -2,7 +2,7 @@ use crate::app::{AppState, ExecutionOutcome, PauseReason, Screen};
 use crate::git::{self, CherryPickOutcome};
 use crate::ui::theme;
 use ratatui::prelude::*;
-use ratatui::widgets::{List, ListItem, Paragraph};
+use ratatui::widgets::{List, ListItem};
 
 pub fn step_execution(state: &mut AppState) {
     if state.execution_index >= state.execution_queue.len() {
@@ -53,16 +53,6 @@ pub fn step_execution(state: &mut AppState) {
 }
 
 pub fn draw_execution(frame: &mut Frame, area: Rect, state: &AppState) {
-    if state.execution_index >= state.execution_queue.len() && !state.execution_queue.is_empty() {
-        let widget = Paragraph::new(Span::styled(
-            "All done — press q to quit",
-            Style::default().fg(theme::SUCCESS).add_modifier(Modifier::BOLD),
-        ))
-        .block(theme::titled_block("Execution"));
-        frame.render_widget(widget, area);
-        return;
-    }
-
     let items: Vec<ListItem> = state
         .execution_results
         .iter()
