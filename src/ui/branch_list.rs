@@ -339,8 +339,8 @@ pub fn bulk_delete_progress_text(bulk: &BulkDeleteState) -> String {
 
 /// Title for the branch list panel, reflecting active search text and
 /// whether fully-picked branches are currently shown.
-fn branch_list_title(state: &AppState) -> String {
-    let mut title = format!("Branches (base: {})", state.base);
+fn branch_list_title(state: &AppState, visible_count: usize) -> String {
+    let mut title = format!("Branches ({visible_count}) (base: {})", state.base);
     if state.search_active {
         title.push_str(&format!(", search: {}█", state.branch_filter));
     } else if !state.branch_filter.is_empty() {
@@ -380,7 +380,7 @@ pub fn draw_branch_list(frame: &mut Frame, area: Rect, state: &AppState) {
             })
             .collect()
     };
-    let title = branch_list_title(state);
+    let title = branch_list_title(state, visible.len());
     let list = List::new(items)
         .block(theme::titled_block(&title))
         .highlight_style(theme::highlight_style())
@@ -411,6 +411,21 @@ mod tests {
                 .map(|n| Branch { name: n.to_string(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true })
                 .collect(),
         )
+    }
+
+    #[test]
+    fn branch_list_title_shows_the_visible_count() {
+        let state = state_with_branches(&["a", "b", "c"]);
+        assert!(branch_list_title(&state, 3).starts_with("Branches (3)"));
+    }
+
+    #[test]
+    fn branch_list_title_count_reflects_the_filtered_amount_not_the_total() {
+        let mut state = state_with_branches(&["a", "b", "c"]);
+        state.branch_filter = "a".to_string();
+        let visible = visible_branches(&state).len();
+        assert_eq!(visible, 1);
+        assert!(branch_list_title(&state, visible).starts_with("Branches (1)"));
     }
 
     #[test]
