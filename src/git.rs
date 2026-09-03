@@ -45,6 +45,14 @@ pub struct Branch {
     pub is_local: bool,
 }
 
+/// Refreshes remote-tracking refs (`git fetch --prune`) so branch listings
+/// and cherry-pick sources reflect what's actually on the remote — without
+/// this, a branch that was force-updated upstream (e.g. by Renovate)
+/// leaves gpick cherry-picking a stale, no-longer-current commit.
+pub fn fetch_all(cwd: &Path) -> Result<(), GitError> {
+    run_git(cwd, &["fetch", "--prune", "--quiet"]).map(|_| ())
+}
+
 pub fn list_branches(cwd: &Path) -> Result<Vec<Branch>, GitError> {
     let current = run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
 
@@ -365,6 +373,45 @@ mod tests {
         let branches = list_branches(dir.path()).unwrap();
         let feature = branches.iter().find(|b| b.name == "feature").unwrap();
         assert!(feature.last_commit_relative.contains("ago"), "got: {:?}", feature.last_commit_relative);
+    }
+
+    #[test]
+    fn fetch_all_updates_a_stale_remote_tracking_ref() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        let stale = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        let remote_dir = TempDir::new().unwrap();
+        Command::new("git").args(["init", "-q", "--bare"]).current_dir(remote_dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_dir.path().to_str().unwrap()])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        Command::new("git").args(["push", "-q", "origin", "HEAD:refs/heads/feature"]).current_dir(dir.path()).status().unwrap();
+        assert_eq!(run_git(dir.path(), &["rev-parse", "origin/feature"]).unwrap(), stale);
+
+        // advance the branch on the bare "remote" directly (not via a local
+        // push), simulating someone else (e.g. Renovate) force-updating it
+        // independently of this clone — the local origin/feature ref stays
+        // stale until an explicit fetch.
+        commit_file(&dir, "b.txt", "b");
+        let new_tip = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git")
+            .args(["push", "-q", "origin", "HEAD:refs/heads/tmp-carrier"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["update-ref", "refs/heads/feature", &new_tip])
+            .current_dir(remote_dir.path())
+            .status()
+            .unwrap();
+
+        assert_eq!(run_git(dir.path(), &["rev-parse", "origin/feature"]).unwrap(), stale, "test setup bug: local ref moved early");
+
+        fetch_all(dir.path()).unwrap();
+
+        assert_eq!(run_git(dir.path(), &["rev-parse", "origin/feature"]).unwrap(), new_tip);
     }
 
     #[test]

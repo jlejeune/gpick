@@ -99,6 +99,13 @@ fn main() -> io::Result<()> {
         std::process::exit(1);
     }
 
+    // Best-effort: a branch that was force-updated upstream (e.g. by
+    // Renovate) otherwise leaves gpick cherry-picking a stale commit.
+    // Don't block startup on network trouble (offline, auth) — just warn.
+    if let Err(e) = git::fetch_all(&cwd) {
+        eprintln!("gpick: warning: git fetch failed ({e}) — branch list may be stale");
+    }
+
     let base = match git::detect_base(&cwd, cli.base.as_deref()) {
         Ok(b) => b,
         Err(e) => {
