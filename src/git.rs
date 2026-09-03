@@ -190,6 +190,17 @@ pub fn is_fully_picked(cwd: &Path, base: &str, branch: &str) -> Result<bool, Git
     Ok(commits.iter().all(|c| empty.contains(&c.sha)))
 }
 
+/// Names of branches from `branches` that are fully picked (see
+/// `is_fully_picked`). A branch whose check errors is treated as not fully
+/// picked — showing it is a safer default than hiding it on a git error.
+pub fn fully_picked_branches(cwd: &Path, base: &str, branches: &[Branch]) -> std::collections::HashSet<String> {
+    branches
+        .iter()
+        .filter(|b| matches!(is_fully_picked(cwd, base, &b.name), Ok(true)))
+        .map(|b| b.name.clone())
+        .collect()
+}
+
 #[derive(Debug)]
 pub enum CherryPickOutcome {
     Success,
@@ -544,6 +555,33 @@ mod tests {
         let new_base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
 
         assert!(is_fully_picked(dir.path(), &new_base_sha, "feature").unwrap());
+    }
+
+    #[test]
+    fn fully_picked_branches_returns_only_the_fully_integrated_ones() {
+        let dir = init_repo();
+        commit_file(&dir, "base.txt", "base");
+        let base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        Command::new("git").args(["checkout", "-q", "-b", "picked"]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "shared.txt", "shared change");
+        Command::new("git").args(["checkout", "-q", "-b", "unpicked", &base_sha]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "other.txt", "other change");
+
+        Command::new("git").args(["checkout", "-q", &base_sha]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("shared.txt"), "shared change").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["commit", "-q", "-m", "applied directly on base"]).current_dir(dir.path()).status().unwrap();
+        let new_base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        let branches = vec![
+            Branch { name: "picked".into(), last_commit_epoch: 0, is_local: true },
+            Branch { name: "unpicked".into(), last_commit_epoch: 0, is_local: true },
+        ];
+        let result = fully_picked_branches(dir.path(), &new_base_sha, &branches);
+
+        assert!(result.contains("picked"));
+        assert!(!result.contains("unpicked"));
     }
 
     #[test]
