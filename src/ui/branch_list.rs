@@ -11,10 +11,16 @@ pub fn visible_branches(state: &AppState) -> Vec<&Branch> {
         .branches
         .iter()
         .filter(|b| b.name.to_lowercase().contains(&filter))
+        .filter(|b| state.show_all_branches || !state.fully_picked.contains(&b.name))
         .collect()
 }
 
 pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
+    if state.search_active {
+        handle_key_search(state, key);
+        return;
+    }
+
     let visible_len = visible_branches(state).len();
     match key {
         KeyCode::Down => {
@@ -38,13 +44,15 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
                 state.last_error = None;
             }
         }
-        KeyCode::Backspace => {
-            state.branch_filter.pop();
+        KeyCode::Char('/') => {
+            state.search_active = true;
+        }
+        KeyCode::Char('a') => {
+            state.show_all_branches = !state.show_all_branches;
             state.branch_cursor = 0;
         }
-        KeyCode::Char(c) => {
-            state.branch_filter.push(c);
-            state.branch_cursor = 0;
+        KeyCode::Char('p') => {
+            state.pending_push = true;
         }
         KeyCode::Enter => {
             if let Some(branch) = visible_branches(state).get(state.branch_cursor) {
@@ -54,6 +62,59 @@ pub fn handle_key_branch_list(state: &mut AppState, key: KeyCode) {
         }
         _ => {}
     }
+}
+
+/// Handles input while the search field (entered with `/`) is active.
+/// Character keys type into the filter instead of triggering shortcuts;
+/// Enter keeps the filter and exits search mode, Esc clears it and exits.
+fn handle_key_search(state: &mut AppState, key: KeyCode) {
+    match key {
+        KeyCode::Char(c) => {
+            state.branch_filter.push(c);
+            state.branch_cursor = 0;
+        }
+        KeyCode::Backspace => {
+            state.branch_filter.pop();
+            state.branch_cursor = 0;
+        }
+        KeyCode::Enter => {
+            state.search_active = false;
+        }
+        KeyCode::Esc => {
+            state.branch_filter.clear();
+            state.search_active = false;
+            state.branch_cursor = 0;
+        }
+        _ => {}
+    }
+}
+
+/// Prompt text for the footer while a push confirmation is pending.
+pub fn push_confirm_prompt(state: &AppState) -> String {
+    format!("Push '{}' to origin/master? y/n", state.base)
+}
+
+/// Handles a key press while a push confirmation is pending. Mirrors
+/// `handle_key_delete_confirm`: returns `true` if the key was consumed here.
+pub fn handle_key_push_confirm(state: &mut AppState, key: KeyCode) -> bool {
+    if !state.pending_push {
+        return false;
+    }
+
+    match key {
+        KeyCode::Char('y') => {
+            match git::push_to_master(&state.cwd, &state.base) {
+                Ok(()) => state.last_error = None,
+                Err(e) => state.last_error = Some(e.to_string()),
+            }
+            state.pending_push = false;
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+            state.pending_push = false;
+        }
+        _ => {}
+    }
+    true
 }
 
 /// Prompt text for the footer while a delete confirmation is pending.
@@ -155,6 +216,21 @@ pub fn handle_key_delete_confirm(state: &mut AppState, key: KeyCode) -> bool {
     true
 }
 
+/// Title for the branch list panel, reflecting active search text and
+/// whether fully-picked branches are currently shown.
+fn branch_list_title(state: &AppState) -> String {
+    let mut title = format!("Branches (base: {})", state.base);
+    if state.search_active {
+        title.push_str(&format!(", search: {}█", state.branch_filter));
+    } else if !state.branch_filter.is_empty() {
+        title.push_str(&format!(", search: {}", state.branch_filter));
+    }
+    if state.show_all_branches {
+        title.push_str(", showing all");
+    }
+    title
+}
+
 pub fn draw_branch_list(frame: &mut Frame, area: Rect, state: &AppState) {
     let visible = visible_branches(state);
     let is_empty = visible.is_empty();
@@ -178,11 +254,7 @@ pub fn draw_branch_list(frame: &mut Frame, area: Rect, state: &AppState) {
             })
             .collect()
     };
-    let title = if state.branch_filter.is_empty() {
-        format!("Branches (base: {})", state.base)
-    } else {
-        format!("Branches (base: {}, filter: {})", state.base, state.branch_filter)
-    };
+    let title = branch_list_title(state);
     let list = List::new(items)
         .block(theme::titled_block(&title))
         .highlight_style(theme::highlight_style())
@@ -229,13 +301,115 @@ mod tests {
     }
 
     #[test]
-    fn typing_filters_visible_branches() {
+    fn slash_enters_search_mode_and_typing_filters_visible_branches() {
         let mut state = state_with_branches(&["feature-x", "bugfix-y"]);
+        handle_key_branch_list(&mut state, KeyCode::Char('/'));
+        assert!(state.search_active);
         handle_key_branch_list(&mut state, KeyCode::Char('f'));
         handle_key_branch_list(&mut state, KeyCode::Char('e'));
         let visible = visible_branches(&state);
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].name, "feature-x");
+    }
+
+    #[test]
+    fn typing_without_search_mode_does_not_filter() {
+        let mut state = state_with_branches(&["feature-x", "bugfix-y"]);
+        handle_key_branch_list(&mut state, KeyCode::Char('f'));
+        assert_eq!(state.branch_filter, "");
+        assert_eq!(visible_branches(&state).len(), 2);
+    }
+
+    #[test]
+    fn enter_exits_search_mode_and_keeps_the_filter() {
+        let mut state = state_with_branches(&["feature-x", "bugfix-y"]);
+        handle_key_branch_list(&mut state, KeyCode::Char('/'));
+        handle_key_branch_list(&mut state, KeyCode::Char('f'));
+        handle_key_branch_list(&mut state, KeyCode::Enter);
+        assert!(!state.search_active);
+        assert_eq!(state.branch_filter, "f");
+    }
+
+    #[test]
+    fn esc_exits_search_mode_and_clears_the_filter() {
+        let mut state = state_with_branches(&["feature-x", "bugfix-y"]);
+        handle_key_branch_list(&mut state, KeyCode::Char('/'));
+        handle_key_branch_list(&mut state, KeyCode::Char('f'));
+        handle_key_branch_list(&mut state, KeyCode::Esc);
+        assert!(!state.search_active);
+        assert_eq!(state.branch_filter, "");
+        // Esc while NOT in search mode still quits, but while in search mode
+        // it must not have quit the app instead of cancelling the search.
+        assert_eq!(state.screen, Screen::BranchList);
+    }
+
+    #[test]
+    fn a_toggles_show_all_branches() {
+        let mut state = state_with_branches(&["a"]);
+        assert!(!state.show_all_branches);
+        handle_key_branch_list(&mut state, KeyCode::Char('a'));
+        assert!(state.show_all_branches);
+        handle_key_branch_list(&mut state, KeyCode::Char('a'));
+        assert!(!state.show_all_branches);
+    }
+
+    #[test]
+    fn fully_picked_branches_are_hidden_unless_show_all_is_on() {
+        let mut state = state_with_branches(&["picked", "unpicked"]);
+        state.fully_picked.insert("picked".to_string());
+
+        let visible = visible_branches(&state);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].name, "unpicked");
+
+        state.show_all_branches = true;
+        assert_eq!(visible_branches(&state).len(), 2);
+    }
+
+    #[test]
+    fn p_sets_pending_push() {
+        let mut state = state_with_branches(&["a"]);
+        handle_key_branch_list(&mut state, KeyCode::Char('p'));
+        assert!(state.pending_push);
+    }
+
+    #[test]
+    fn n_cancels_pending_push_without_pushing() {
+        let mut state = state_with_branches(&["a"]);
+        state.pending_push = true;
+        let consumed = handle_key_push_confirm(&mut state, KeyCode::Char('n'));
+        assert!(consumed);
+        assert!(!state.pending_push);
+    }
+
+    #[test]
+    fn no_pending_push_is_not_consumed() {
+        let mut state = state_with_branches(&["a"]);
+        assert!(!handle_key_push_confirm(&mut state, KeyCode::Char('y')));
+    }
+
+    #[test]
+    fn y_pushes_base_to_origin_master() {
+        use std::process::Command;
+        let (_dir, cwd) = init_repo();
+        let remote_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "-q", "--bare"]).current_dir(remote_dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_dir.path().to_str().unwrap()])
+            .current_dir(&cwd)
+            .status()
+            .unwrap();
+        let head_sha = git::run_git(&cwd, &["rev-parse", "HEAD"]).unwrap();
+
+        let mut state = AppState::new(cwd.clone(), "HEAD".into(), vec![]);
+        state.pending_push = true;
+
+        handle_key_push_confirm(&mut state, KeyCode::Char('y'));
+
+        assert!(!state.pending_push);
+        assert!(state.last_error.is_none());
+        let remote_master = git::run_git(remote_dir.path(), &["rev-parse", "master"]).unwrap();
+        assert_eq!(remote_master, head_sha);
     }
 
     #[test]
@@ -273,14 +447,12 @@ mod tests {
     }
 
     #[test]
-    fn char_d_filters_instead_of_deleting() {
+    fn char_d_outside_search_mode_does_nothing() {
         let mut state = state_with_branches(&["dev", "feature"]);
         handle_key_branch_list(&mut state, KeyCode::Char('d'));
-        assert_eq!(state.branch_filter, "d");
+        assert_eq!(state.branch_filter, "");
         assert_eq!(state.pending_delete, None);
-        let visible = visible_branches(&state);
-        assert_eq!(visible.len(), 1);
-        assert_eq!(visible[0].name, "dev");
+        assert_eq!(visible_branches(&state).len(), 2);
     }
 
     #[test]

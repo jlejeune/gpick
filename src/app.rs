@@ -55,6 +55,17 @@ pub struct AppState {
     pub branches: Vec<git::Branch>,
     pub branch_cursor: usize,
     pub branch_filter: String,
+    /// True while the branch list's search field is being edited (entered
+    /// with `/`) — while active, character keys type into `branch_filter`
+    /// instead of triggering branch-list shortcuts.
+    pub search_active: bool,
+    /// Names of branches whose every ahead-of-base commit would cherry-pick
+    /// as empty — hidden from the branch list unless `show_all_branches`.
+    pub fully_picked: HashSet<String>,
+    /// Toggled with `a` to reveal branches hidden via `fully_picked`.
+    pub show_all_branches: bool,
+    /// Set with `p` on the branch list; confirmed with y/n like a delete.
+    pub pending_push: bool,
     pub selected_branch: Option<String>,
     pub commits: Vec<git::Commit>,
     pub commit_cursor: usize,
@@ -77,6 +88,10 @@ impl AppState {
             branches,
             branch_cursor: 0,
             branch_filter: String::new(),
+            search_active: false,
+            fully_picked: HashSet::new(),
+            show_all_branches: false,
+            pending_push: false,
             selected_branch: None,
             commits: Vec::new(),
             commit_cursor: 0,
