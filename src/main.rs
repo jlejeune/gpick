@@ -22,7 +22,15 @@ fn is_ctrl_c(key: &KeyEvent) -> bool {
 /// base is never meaningful, so unlike other "nothing to pick" branches
 /// (hidden only until `a` shows everything), this one is dropped outright.
 fn exclude_base_branch(branches: Vec<git::Branch>, base: &str) -> Vec<git::Branch> {
-    branches.into_iter().filter(|b| b.name != base).collect()
+    // base is usually a local name ("main") or an origin/HEAD-derived
+    // remote one ("origin/main") — exclude whichever counterpart form
+    // wasn't used too, so e.g. a local "main" base doesn't leave
+    // "origin/main" visible under "show all".
+    let counterpart = match base.strip_prefix("origin/") {
+        Some(local) => local.to_string(),
+        None => format!("origin/{base}"),
+    };
+    branches.into_iter().filter(|b| b.name != base && b.name != counterpart).collect()
 }
 
 /// Loads the commits ahead of base for `branch` into `state`, filtering out
@@ -327,6 +335,28 @@ mod tests {
             git::Branch { name: "feature".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true },
         ];
         let result = exclude_base_branch(branches, "main");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "feature");
+    }
+
+    #[test]
+    fn exclude_base_branch_also_drops_the_remote_counterpart_of_a_local_base() {
+        let branches = vec![
+            git::Branch { name: "origin/main".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: false },
+            git::Branch { name: "feature".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true },
+        ];
+        let result = exclude_base_branch(branches, "main");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "feature");
+    }
+
+    #[test]
+    fn exclude_base_branch_also_drops_the_local_counterpart_of_a_remote_base() {
+        let branches = vec![
+            git::Branch { name: "main".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true },
+            git::Branch { name: "feature".into(), last_commit_epoch: 0, last_commit_relative: String::new(), is_local: true },
+        ];
+        let result = exclude_base_branch(branches, "origin/main");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "feature");
     }
