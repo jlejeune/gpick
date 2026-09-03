@@ -51,6 +51,16 @@ pub enum PendingDelete {
     Bulk(Vec<String>),
 }
 
+/// Tracks an in-progress bulk delete so the run loop can process one branch
+/// per tick (redrawing between each) instead of blocking on the whole
+/// batch — that's what makes the footer's progress spinner actually move.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BulkDeleteState {
+    pub names: Vec<String>,
+    pub index: usize,
+    pub errors: Vec<String>,
+}
+
 pub struct AppState {
     pub cwd: PathBuf,
     pub base: String,
@@ -86,6 +96,7 @@ pub struct AppState {
     pub pause_reason: Option<PauseReason>,
     pub last_error: Option<String>,
     pub pending_delete: Option<PendingDelete>,
+    pub bulk_delete: Option<BulkDeleteState>,
 }
 
 impl AppState {
@@ -114,6 +125,7 @@ impl AppState {
             pause_reason: None,
             last_error: None,
             pending_delete: None,
+            bulk_delete: None,
         }
     }
 

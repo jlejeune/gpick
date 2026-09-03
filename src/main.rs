@@ -153,6 +153,15 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
             continue;
         }
 
+        // a bulk delete just finished processing every branch — finalize
+        // it (report any errors) before the next draw.
+        if let Some(bulk) = &state.bulk_delete {
+            if bulk.index >= bulk.names.len() {
+                ui::branch_list::finish_bulk_delete(state);
+                continue;
+            }
+        }
+
         // refresh preview cache when hovering a different commit on the commit list screen
         if state.screen == Screen::CommitList {
             if let Some(c) = state.commits.get(state.commit_cursor) {
@@ -162,11 +171,14 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
 
         terminal.draw(|frame| {
             enum FooterKind {
+                Progress(String),
                 Confirm(String),
                 Error(String),
                 Hints(String),
             }
-            let footer_kind = if let Some(pending) = &state.pending_delete {
+            let footer_kind = if let Some(bulk) = &state.bulk_delete {
+                FooterKind::Progress(ui::branch_list::bulk_delete_progress_text(bulk))
+            } else if let Some(pending) = &state.pending_delete {
                 FooterKind::Confirm(ui::branch_list::confirm_prompt(pending))
             } else if state.pending_push {
                 FooterKind::Confirm(ui::branch_list::push_confirm_prompt(state))
@@ -176,7 +188,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
                 FooterKind::Hints(ui::help::footer_text(&state.screen).to_string())
             };
             let footer_str = match &footer_kind {
-                FooterKind::Confirm(s) | FooterKind::Error(s) | FooterKind::Hints(s) => s.clone(),
+                FooterKind::Progress(s) | FooterKind::Confirm(s) | FooterKind::Error(s) | FooterKind::Hints(s) => s.clone(),
             };
             let footer_height = ui::help::footer_height(&footer_str, frame.area().width);
 
@@ -204,6 +216,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
                 Screen::Quit => {}
             }
             match footer_kind {
+                FooterKind::Progress(s) => ui::help::draw_message_text(frame, footer, &s, ui::theme::PENDING),
                 FooterKind::Confirm(s) => ui::help::draw_message_text(frame, footer, &s, ui::theme::PENDING),
                 FooterKind::Error(s) => ui::help::draw_message_text(frame, footer, &s, ui::theme::ERROR),
                 FooterKind::Hints(s) => ui::help::draw_footer_text(frame, footer, &s),
@@ -214,6 +227,15 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
         if state.screen == Screen::Execution && state.execution_index < state.execution_queue.len() {
             ui::execution::step_execution(state);
             continue;
+        }
+
+        // process one branch of an in-progress bulk delete per tick, so the
+        // footer's progress spinner is redrawn between each git call
+        if let Some(bulk) = &state.bulk_delete {
+            if bulk.index < bulk.names.len() {
+                ui::branch_list::step_bulk_delete(state);
+                continue;
+            }
         }
 
         if event::poll(std::time::Duration::from_millis(200))? {

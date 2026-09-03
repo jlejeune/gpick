@@ -9,6 +9,15 @@ pub const ERROR: Color = Color::Red;
 pub const PENDING: Color = Color::Yellow;
 pub const MUTED: Color = Color::DarkGray;
 
+/// Braille spinner frames for animating a long-running, multi-step
+/// operation (e.g. a bulk delete) in the footer.
+pub const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// The spinner frame for step `tick` of a multi-step operation.
+pub fn spinner_frame(tick: usize) -> char {
+    SPINNER[tick % SPINNER.len()]
+}
+
 /// A bordered block with rounded corners and a bold title, used by every
 /// screen so the whole app shares one visual language.
 pub fn titled_block(title: &str) -> Block<'static> {
@@ -63,5 +72,12 @@ mod tests {
     #[test]
     fn breadcrumb_joins_segments_with_separator() {
         assert_eq!(breadcrumb(&["Branches", "feature-x", "Commits"]), "gpick › Branches › feature-x › Commits");
+    }
+
+    #[test]
+    fn spinner_frame_cycles_through_all_frames_and_wraps() {
+        assert_eq!(spinner_frame(0), SPINNER[0]);
+        assert_eq!(spinner_frame(SPINNER.len()), SPINNER[0]);
+        assert_eq!(spinner_frame(SPINNER.len() + 2), SPINNER[2]);
     }
 }

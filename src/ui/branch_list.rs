@@ -1,4 +1,4 @@
-use crate::app::{AppState, PendingDelete, Screen};
+use crate::app::{AppState, BulkDeleteState, PendingDelete, Screen};
 use crate::git::{self, Branch};
 use crate::ui::theme;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -276,26 +276,10 @@ pub fn handle_key_delete_confirm(state: &mut AppState, key: KeyCode) -> bool {
                 state.pending_delete = None;
             }
             PendingDelete::Bulk(names) => {
-                let is_local: std::collections::HashMap<String, bool> =
-                    state.branches.iter().map(|b| (b.name.clone(), b.is_local)).collect();
-                let mut errors = Vec::new();
-                for name in &names {
-                    let result = if is_local.get(name).copied().unwrap_or(true) {
-                        git::delete_branch(&state.cwd, name).map_err(|e| e.to_string())
-                    } else {
-                        delete_remote_with_stale_fallback(state, name)
-                    };
-                    match result {
-                        Ok(()) => {
-                            remove_deleted_branch(state, name);
-                            state.selected_branches.remove(name);
-                        }
-                        Err(e) => errors.push(format!("{name}: {e}")),
-                    }
-                }
-                if !errors.is_empty() {
-                    state.last_error = Some(errors.join("; "));
-                }
+                // Processed incrementally by step_bulk_delete(), one branch
+                // per run-loop tick, so the footer can show live progress
+                // instead of freezing for the whole batch.
+                state.bulk_delete = Some(BulkDeleteState { names, index: 0, errors: Vec::new() });
                 state.pending_delete = None;
             }
         },
@@ -305,6 +289,52 @@ pub fn handle_key_delete_confirm(state: &mut AppState, key: KeyCode) -> bool {
         _ => {}
     }
     true
+}
+
+/// Processes one branch of an in-progress bulk delete and advances its
+/// index. Meant to be called once per run-loop tick (with a redraw in
+/// between calls) rather than looped over internally — that's what lets
+/// the footer's progress spinner actually move.
+pub fn step_bulk_delete(state: &mut AppState) {
+    let Some(bulk) = &state.bulk_delete else { return };
+    let Some(name) = bulk.names.get(bulk.index).cloned() else { return };
+
+    let is_local = state.branches.iter().find(|b| b.name == name).map(|b| b.is_local).unwrap_or(true);
+    let result =
+        if is_local { git::delete_branch(&state.cwd, &name).map_err(|e| e.to_string()) } else { delete_remote_with_stale_fallback(state, &name) };
+
+    match result {
+        Ok(()) => {
+            remove_deleted_branch(state, &name);
+            state.selected_branches.remove(&name);
+        }
+        Err(e) => {
+            if let Some(bulk) = &mut state.bulk_delete {
+                bulk.errors.push(format!("{name}: {e}"));
+            }
+        }
+    }
+    if let Some(bulk) = &mut state.bulk_delete {
+        bulk.index += 1;
+    }
+}
+
+/// Finalizes a bulk delete once every branch has been processed: reports
+/// any per-branch errors and clears the in-progress state.
+pub fn finish_bulk_delete(state: &mut AppState) {
+    if let Some(bulk) = state.bulk_delete.take() {
+        if !bulk.errors.is_empty() {
+            state.last_error = Some(bulk.errors.join("; "));
+        }
+    }
+}
+
+/// Footer text for an in-progress bulk delete, with an animated spinner
+/// tied to how many branches have been processed so far.
+pub fn bulk_delete_progress_text(bulk: &BulkDeleteState) -> String {
+    let spinner = theme::spinner_frame(bulk.index);
+    let current = bulk.names.get(bulk.index).map(String::as_str).unwrap_or("");
+    format!("{spinner} Deleting {}/{}… ({current})", bulk.index + 1, bulk.names.len())
 }
 
 /// Title for the branch list panel, reflecting active search text and
@@ -598,7 +628,22 @@ mod tests {
     }
 
     #[test]
-    fn y_bulk_deletes_all_selected_local_branches() {
+    fn y_on_bulk_starts_incremental_delete_without_deleting_yet() {
+        let mut state = state_with_branches(&["one", "two"]);
+        state.pending_delete = Some(PendingDelete::Bulk(vec!["one".to_string(), "two".to_string()]));
+
+        handle_key_delete_confirm(&mut state, KeyCode::Char('y'));
+
+        assert_eq!(state.pending_delete, None);
+        let bulk = state.bulk_delete.as_ref().expect("bulk delete should have started");
+        assert_eq!(bulk.names, vec!["one".to_string(), "two".to_string()]);
+        assert_eq!(bulk.index, 0);
+        // nothing deleted yet — step_bulk_delete does that, one at a time
+        assert_eq!(state.branches.len(), 2);
+    }
+
+    #[test]
+    fn step_bulk_delete_processes_one_branch_and_advances() {
         use std::process::Command;
         let (_dir, cwd) = init_repo();
         Command::new("git").args(["branch", "one"]).current_dir(&cwd).status().unwrap();
@@ -614,32 +659,63 @@ mod tests {
         );
         state.selected_branches.insert("one".to_string());
         state.selected_branches.insert("two".to_string());
-        state.pending_delete = Some(PendingDelete::Bulk(vec!["one".to_string(), "two".to_string()]));
+        state.bulk_delete = Some(BulkDeleteState {
+            names: vec!["one".to_string(), "two".to_string()],
+            index: 0,
+            errors: Vec::new(),
+        });
 
-        handle_key_delete_confirm(&mut state, KeyCode::Char('y'));
+        step_bulk_delete(&mut state);
 
-        assert_eq!(state.pending_delete, None);
+        assert_eq!(state.bulk_delete.as_ref().unwrap().index, 1);
+        assert!(!state.branches.iter().any(|b| b.name == "one"));
+        assert!(state.branches.iter().any(|b| b.name == "two")); // not processed yet
+        assert!(git::run_git(&cwd, &["branch", "--list", "one"]).unwrap().is_empty());
+
+        step_bulk_delete(&mut state);
+
+        assert_eq!(state.bulk_delete.as_ref().unwrap().index, 2);
         assert!(state.branches.is_empty());
         assert!(state.selected_branches.is_empty());
-        assert!(git::run_git(&cwd, &["branch", "--list", "one"]).unwrap().is_empty());
         assert!(git::run_git(&cwd, &["branch", "--list", "two"]).unwrap().is_empty());
     }
 
     #[test]
-    fn y_bulk_delete_reports_errors_for_branches_that_fail() {
-        let (_dir, cwd) = init_repo();
-        // "missing" doesn't actually exist locally, so its delete will fail
-        let mut state = AppState::new(
-            cwd.clone(),
-            "main".into(),
-            vec![Branch { name: "missing".into(), last_commit_epoch: 0, is_local: true }],
-        );
-        state.pending_delete = Some(PendingDelete::Bulk(vec!["missing".to_string()]));
+    fn finish_bulk_delete_clears_state_and_reports_no_error_on_success() {
+        let mut state = state_with_branches(&["a"]);
+        state.bulk_delete = Some(BulkDeleteState { names: vec!["a".to_string()], index: 1, errors: Vec::new() });
 
-        handle_key_delete_confirm(&mut state, KeyCode::Char('y'));
+        finish_bulk_delete(&mut state);
 
-        assert_eq!(state.pending_delete, None);
+        assert!(state.bulk_delete.is_none());
+        assert!(state.last_error.is_none());
+    }
+
+    #[test]
+    fn finish_bulk_delete_reports_errors_for_branches_that_failed() {
+        let mut state = state_with_branches(&["missing"]);
+        state.bulk_delete = Some(BulkDeleteState {
+            names: vec!["missing".to_string()],
+            index: 1,
+            errors: vec!["missing: some git error".to_string()],
+        });
+
+        finish_bulk_delete(&mut state);
+
+        assert!(state.bulk_delete.is_none());
         assert!(state.last_error.is_some());
+    }
+
+    #[test]
+    fn bulk_delete_progress_text_shows_position_and_current_branch() {
+        let bulk = BulkDeleteState {
+            names: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            index: 1,
+            errors: Vec::new(),
+        };
+        let text = bulk_delete_progress_text(&bulk);
+        assert!(text.contains("2/3"));
+        assert!(text.contains("b"));
     }
 
     #[test]
