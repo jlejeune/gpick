@@ -11,6 +11,7 @@ The usual workflow — find a commit on another branch, `git cherry-pick` it, fi
 - **Branch list** with fuzzy search (`/`), multi-select (`Space`, `Shift+↑/↓` for ranges), and bulk delete (local or remote, with an animated progress footer for big batches)
 - **Automatically hides branches with nothing to cherry-pick** — no commits ahead of base, or every commit already applied elsewhere (via `git cherry`) — toggle with `a` to see everything anyway
 - **Commit list** with a live diff preview panel, filtering out commits that would land as empty picks
+- **Release notes panel**: when a branch's commit is a version bump (e.g. a Renovate docker-tag update), fetches that release's notes from the public GitHub API and shows them in a third panel — best-effort, no `gh` CLI or auth token needed, silently skipped when it can't confidently tell what's being bumped
 - **Cherry-pick execution** that re-authors, signs off (`-s`), and preserves the original commit date on every applied commit, then chains straight back to the branch list so you can keep going
 - Handles the awkward edge cases: real merge conflicts, a cherry-pick that resolves to an empty diff, a stale remote-tracking ref pointing at a branch someone already deleted
 - A `p` shortcut to push the current base onto `origin/master`, with a commit-count preview before confirming
