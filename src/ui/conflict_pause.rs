@@ -49,6 +49,12 @@ pub fn handle_key_conflict_pause(state: &mut AppState, key: KeyCode) -> Result<(
                 // Nothing was applied for this commit — just go back.
                 abort_and_return_to_commit_list(state);
             }
+            PauseReason::EmptyAfterResolve => {
+                // Still mid-sequencer (git refused to finish, it didn't
+                // fail) — abort resets cleanly back to the pre-pick state.
+                git::cherry_pick_abort(&state.cwd)?;
+                abort_and_return_to_commit_list(state);
+            }
         },
         KeyCode::Char('c') => match reason {
             PauseReason::CherryPickConflict => match git::cherry_pick_continue(&state.cwd)? {
@@ -64,7 +70,18 @@ pub fn handle_key_conflict_pause(state: &mut AppState, key: KeyCode) -> Result<(
                     }
                 }
                 CherryPickOutcome::Conflict(msg) => {
-                    state.conflict_message = Some(msg);
+                    if git::is_empty_cherry_pick_message(&msg) {
+                        // Resolving the conflict left nothing to apply —
+                        // git refuses `--continue`; switch to the
+                        // keep-empty-or-abort flow instead of retrying the
+                        // same doomed --continue call.
+                        state.conflict_message = Some(
+                            "This commit is already fully applied — cherry-picking it would create an empty commit.".to_string(),
+                        );
+                        state.pause_reason = Some(PauseReason::EmptyAfterResolve);
+                    } else {
+                        state.conflict_message = Some(msg);
+                    }
                 }
             },
             PauseReason::AmendFailure => {
@@ -85,6 +102,26 @@ pub fn handle_key_conflict_pause(state: &mut AppState, key: KeyCode) -> Result<(
                 state.conflict_message = None;
                 state.pause_reason = None;
                 state.screen = Screen::Execution;
+            }
+            PauseReason::EmptyAfterResolve => {
+                // Commit it as an empty commit directly — `--continue`
+                // refuses even with `--allow-empty` forwarded to it.
+                match git::commit_allow_empty(&state.cwd) {
+                    Ok(()) => {
+                        let commit_idx = state.execution_queue[state.execution_index];
+                        let commit = state.commits[commit_idx].clone();
+                        match git::amend_reauthor(&state.cwd, &commit.date_rfc2822) {
+                            Ok(()) => mark_current_done_and_advance(state),
+                            Err(e) => {
+                                state.conflict_message = Some(e.to_string());
+                                state.pause_reason = Some(PauseReason::AmendFailure);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        state.conflict_message = Some(e.to_string());
+                    }
+                }
             }
         },
         _ => {}
@@ -299,5 +336,73 @@ mod tests {
         // the reset --hard undid the landed commit entirely, so it is not
         // "already applied" and should remain selected for a future retry
         assert!(state.selected.contains(&0));
+    }
+
+    fn empty_after_resolve_state() -> (TempDir, AppState) {
+        let dir = init_repo();
+        std::fs::write(dir.path().join("f.txt"), "base").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["commit", "-q", "-m", "base"]).current_dir(dir.path()).status().unwrap();
+        let base_sha = git::run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "same-change").unwrap();
+        Command::new("git").args(["commit", "-q", "-am", "feature"]).current_dir(dir.path()).status().unwrap();
+        let feature_commits = git::list_commits(dir.path(), &base_sha, "feature").unwrap();
+
+        Command::new("git").args(["checkout", "-q", &base_sha]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "same-change").unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-am", "same change, different message"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+
+        let mut state = AppState::new(dir.path().to_path_buf(), base_sha, vec![]);
+        state.load_commits(feature_commits);
+        state.selected.insert(0);
+        state.execution_queue = vec![0];
+        state.execution_index = 0;
+        state.execution_results = vec![ExecutionResult {
+            commit: state.commits[0].clone(),
+            outcome: ExecutionOutcome::Pending,
+        }];
+
+        // simulate step_execution() having already hit the empty-pick refusal
+        git::cherry_pick(dir.path(), &state.commits[0].sha).ok();
+        state.conflict_message = Some("already applied".to_string());
+        state.pause_reason = Some(PauseReason::EmptyAfterResolve);
+        state.screen = Screen::ConflictPause;
+
+        (dir, state)
+    }
+
+    #[test]
+    fn empty_after_resolve_continue_commits_it_empty_and_advances() {
+        let (dir, mut state) = empty_after_resolve_state();
+
+        handle_key_conflict_pause(&mut state, KeyCode::Char('c')).unwrap();
+
+        assert!(state.conflict_message.is_none());
+        assert_eq!(state.execution_index, 1);
+        assert_eq!(state.screen, Screen::Execution);
+        assert!(matches!(state.execution_results[0].outcome, ExecutionOutcome::Done));
+        let log = git::run_git(dir.path(), &["log", "-1", "--format=%B"]).unwrap();
+        assert!(log.contains("Signed-off-by"));
+        let status = git::run_git(dir.path(), &["status", "--short"]).unwrap();
+        assert!(status.is_empty());
+    }
+
+    #[test]
+    fn empty_after_resolve_abort_resets_to_pre_pick_state() {
+        let (dir, mut state) = empty_after_resolve_state();
+        let head_before = git::run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        handle_key_conflict_pause(&mut state, KeyCode::Char('a')).unwrap();
+
+        assert_eq!(state.screen, Screen::CommitList);
+        let head_after = git::run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(head_before, head_after);
+        assert!(state.execution_queue.is_empty());
     }
 }

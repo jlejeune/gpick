@@ -33,6 +33,11 @@ pub enum PauseReason {
     AmendFailure,
     /// A hard error occurred while stepping execution (e.g. git unspawnable).
     StepError,
+    /// The cherry-pick (initial, or after resolving a real conflict)
+    /// resolved to an empty diff — everything it would change is already
+    /// present on base. Git refuses to commit it via `--continue`; offer to
+    /// keep it as an empty commit or give up on it.
+    EmptyAfterResolve,
 }
 
 #[derive(Debug, Clone, PartialEq)]

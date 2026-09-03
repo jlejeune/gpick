@@ -243,11 +243,28 @@ pub fn cherry_pick_abort(cwd: &Path) -> Result<(), GitError> {
     run_git(cwd, &["cherry-pick", "--abort"]).map(|_| ())
 }
 
+/// True if a cherry-pick failure message is git's refusal to create an
+/// empty commit (the resolved diff has nothing left to apply — the change
+/// is already present on base) rather than an actual merge conflict.
+pub fn is_empty_cherry_pick_message(msg: &str) -> bool {
+    msg.contains("previous cherry-pick is now empty") || msg.contains("allow an empty commit")
+}
+
+/// Finishes a cherry-pick whose resolved diff is empty by committing that
+/// empty commit directly — `git cherry-pick --continue` refuses to, even
+/// with `--allow-empty` passed through to it.
+pub fn commit_allow_empty(cwd: &Path) -> Result<(), GitError> {
+    run_git(cwd, &["commit", "--allow-empty", "--no-edit"]).map(|_| ())
+}
+
 pub fn amend_reauthor(cwd: &Path, date_rfc2822: &str) -> Result<(), GitError> {
     let date_arg = format!("--date={date_rfc2822}");
+    // --allow-empty is a no-op on a normal non-empty commit, but without it
+    // amending a commit created via commit_allow_empty() (an intentionally
+    // empty cherry-pick) fails outright.
     run_git(
         cwd,
-        &["commit", "--amend", "--reset-author", "-s", "--no-edit", &date_arg],
+        &["commit", "--amend", "--allow-empty", "--reset-author", "-s", "--no-edit", &date_arg],
     )
     .map(|_| ())
 }
@@ -639,6 +656,39 @@ mod tests {
         let outcome = cherry_pick(dir.path(), &feature_sha).unwrap();
         assert!(matches!(outcome, CherryPickOutcome::Conflict(_)));
         cherry_pick_abort(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn is_empty_cherry_pick_message_recognizes_gits_wording() {
+        assert!(is_empty_cherry_pick_message(
+            "The previous cherry-pick is now empty, possibly due to conflict resolution."
+        ));
+        assert!(!is_empty_cherry_pick_message("CONFLICT (content): Merge conflict in a.txt"));
+    }
+
+    #[test]
+    fn commit_allow_empty_finishes_a_stuck_empty_cherry_pick() {
+        let dir = init_repo();
+        commit_file(&dir, "f.txt", "base");
+        let base_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "same-change").unwrap();
+        Command::new("git").args(["commit", "-q", "-am", "feature"]).current_dir(dir.path()).status().unwrap();
+        let feature_sha = run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        Command::new("git").args(["checkout", "-q", &base_sha]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "same-change").unwrap();
+        Command::new("git").args(["commit", "-q", "-am", "same change, different message"]).current_dir(dir.path()).status().unwrap();
+
+        // this cherry-pick resolves to an empty diff — content already matches
+        let outcome = cherry_pick(dir.path(), &feature_sha).unwrap();
+        let CherryPickOutcome::Conflict(msg) = outcome else { panic!("expected the empty-pick refusal") };
+        assert!(is_empty_cherry_pick_message(&msg), "unexpected message: {msg}");
+
+        commit_allow_empty(dir.path()).unwrap();
+
+        let status = run_git(dir.path(), &["status", "--short"]).unwrap();
+        assert!(status.is_empty());
     }
 
     #[test]

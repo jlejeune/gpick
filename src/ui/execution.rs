@@ -45,8 +45,18 @@ pub fn step_execution(state: &mut AppState) {
             if let Some(r) = state.execution_results.get_mut(index) {
                 r.outcome = ExecutionOutcome::Failed(msg.clone());
             }
-            state.conflict_message = Some(msg);
-            state.pause_reason = Some(PauseReason::CherryPickConflict);
+            if git::is_empty_cherry_pick_message(&msg) {
+                // No real conflict — the change is already present on
+                // base, so git refuses to create an empty commit outright.
+                state.conflict_message = Some(
+                    "This commit is already fully applied — cherry-picking it would create an empty commit."
+                        .to_string(),
+                );
+                state.pause_reason = Some(PauseReason::EmptyAfterResolve);
+            } else {
+                state.conflict_message = Some(msg);
+                state.pause_reason = Some(PauseReason::CherryPickConflict);
+            }
             state.screen = Screen::ConflictPause;
         }
     }
@@ -158,6 +168,42 @@ mod tests {
         assert!(state.conflict_message.is_some());
         assert_eq!(state.pause_reason, Some(PauseReason::CherryPickConflict));
         assert!(matches!(state.execution_results[0].outcome, ExecutionOutcome::Failed(_)));
+        git::cherry_pick_abort(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn step_execution_routes_an_already_applied_commit_to_empty_after_resolve() {
+        let dir = init_repo();
+        commit_file(&dir, "f.txt", "base");
+        let base_sha = git::run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "same-change").unwrap();
+        Command::new("git").args(["commit", "-q", "-am", "feature"]).current_dir(dir.path()).status().unwrap();
+        let feature_commits = git::list_commits(dir.path(), &base_sha, "feature").unwrap();
+
+        Command::new("git").args(["checkout", "-q", &base_sha]).current_dir(dir.path()).status().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "same-change").unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-am", "same change, different message"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+
+        let mut state = AppState::new(dir.path().to_path_buf(), base_sha, vec![]);
+        state.load_commits(feature_commits);
+        state.execution_queue = vec![0];
+        state.execution_index = 0;
+        state.execution_results = vec![ExecutionResult {
+            commit: state.commits[0].clone(),
+            outcome: ExecutionOutcome::Pending,
+        }];
+        state.screen = Screen::Execution;
+
+        step_execution(&mut state);
+
+        assert_eq!(state.execution_index, 0); // did not advance
+        assert_eq!(state.screen, Screen::ConflictPause);
+        assert_eq!(state.pause_reason, Some(PauseReason::EmptyAfterResolve));
         git::cherry_pick_abort(dir.path()).unwrap();
     }
 
