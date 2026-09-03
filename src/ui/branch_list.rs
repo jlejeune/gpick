@@ -193,6 +193,27 @@ fn parse_worktree_path(err: &str) -> Option<String> {
     Some(err[start + 1..end].to_string())
 }
 
+/// Deletes remote-tracking branch `name` (e.g. `origin/foo`) on its actual
+/// remote. If the remote already lost that branch — the local cache just
+/// hasn't caught up, surfaced by git as "remote ref does not exist" — this
+/// prunes the stale local ref and reports success instead of an error, so
+/// the user isn't stuck on a branch gpick can never delete "successfully".
+fn delete_remote_with_stale_fallback(state: &AppState, name: &str) -> Result<(), String> {
+    let (remote, branch) = name.split_once('/').unwrap_or(("origin", name));
+    match git::delete_remote_branch(&state.cwd, remote, branch) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("remote ref does not exist") {
+                let _ = git::prune_remote_tracking_ref(&state.cwd, name);
+                Ok(())
+            } else {
+                Err(msg)
+            }
+        }
+    }
+}
+
 fn remove_deleted_branch(state: &mut AppState, name: &str) {
     state.branches.retain(|b| b.name != name);
     let visible_len = visible_branches(state).len();
@@ -229,14 +250,9 @@ pub fn handle_key_delete_confirm(state: &mut AppState, key: KeyCode) -> bool {
                 }
             },
             PendingDelete::Remote(name) => {
-                let (remote, branch) = name.split_once('/').unwrap_or(("origin", name.as_str()));
-                match git::delete_remote_branch(&state.cwd, remote, branch) {
-                    Ok(()) => {
-                        remove_deleted_branch(state, &name);
-                    }
-                    Err(e) => {
-                        state.last_error = Some(e.to_string());
-                    }
+                match delete_remote_with_stale_fallback(state, &name) {
+                    Ok(()) => remove_deleted_branch(state, &name),
+                    Err(msg) => state.last_error = Some(msg),
                 }
                 state.pending_delete = None;
             }
@@ -262,10 +278,9 @@ pub fn handle_key_delete_confirm(state: &mut AppState, key: KeyCode) -> bool {
                 let mut errors = Vec::new();
                 for name in &names {
                     let result = if is_local.get(name).copied().unwrap_or(true) {
-                        git::delete_branch(&state.cwd, name)
+                        git::delete_branch(&state.cwd, name).map_err(|e| e.to_string())
                     } else {
-                        let (remote, branch) = name.split_once('/').unwrap_or(("origin", name.as_str()));
-                        git::delete_remote_branch(&state.cwd, remote, branch)
+                        delete_remote_with_stale_fallback(state, name)
                     };
                     match result {
                         Ok(()) => {
@@ -738,6 +753,40 @@ mod tests {
         assert!(!state.branches.iter().any(|b| b.name == "origin/throwaway"));
         let remote_refs = git::run_git(remote_dir.path(), &["branch", "--list", "throwaway"]).unwrap();
         assert!(remote_refs.is_empty());
+    }
+
+    #[test]
+    fn y_deleting_an_already_gone_remote_branch_prunes_the_stale_ref_without_erroring() {
+        use std::process::Command;
+        let (_dir, cwd) = init_repo();
+        let remote_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "-q", "--bare"]).current_dir(remote_dir.path()).status().unwrap();
+        Command::new("git")
+            .args(["remote", "add", "origin", remote_dir.path().to_str().unwrap()])
+            .current_dir(&cwd)
+            .status()
+            .unwrap();
+        // simulate a remote-tracking ref whose branch was already deleted on
+        // the actual remote (e.g. by someone else, or a prior run) — the
+        // local cache just hasn't been pruned, matching a real report where
+        // "git push --delete" failed with "remote ref does not exist".
+        let head_sha = git::run_git(&cwd, &["rev-parse", "HEAD"]).unwrap();
+        git::run_git(&cwd, &["update-ref", "refs/remotes/origin/ghost", &head_sha]).unwrap();
+
+        let mut state = AppState::new(
+            cwd.clone(),
+            "main".into(),
+            vec![Branch { name: "origin/ghost".into(), last_commit_epoch: 0, is_local: false }],
+        );
+        state.pending_delete = Some(PendingDelete::Remote("origin/ghost".to_string()));
+
+        handle_key_delete_confirm(&mut state, KeyCode::Char('y'));
+
+        assert_eq!(state.pending_delete, None);
+        assert!(state.last_error.is_none(), "expected no error, got {:?}", state.last_error);
+        assert!(!state.branches.iter().any(|b| b.name == "origin/ghost"));
+        let local_ref = git::run_git(&cwd, &["for-each-ref", "refs/remotes/origin/ghost"]).unwrap();
+        assert!(local_ref.is_empty());
     }
 
     #[test]
