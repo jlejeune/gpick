@@ -79,16 +79,26 @@ pub fn draw_commit_list(frame: &mut Frame, area: Rect, state: &AppState, preview
         list_state.select(Some(state.commit_cursor));
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(area);
+    let constraints = if state.release_notes.is_some() {
+        vec![Constraint::Percentage(25), Constraint::Percentage(45), Constraint::Percentage(30)]
+    } else {
+        vec![Constraint::Percentage(40), Constraint::Percentage(60)]
+    };
+    let chunks = Layout::default().direction(Direction::Horizontal).constraints(constraints).split(area);
 
     frame.render_stateful_widget(list, chunks[0], &mut list_state);
     if !is_empty {
         theme::draw_scrollbar(frame, chunks[0], state.commits.len(), state.commit_cursor);
     }
     draw_preview_panel(frame, chunks[1], state, preview);
+    if let Some(notes) = &state.release_notes {
+        draw_release_notes_panel(frame, chunks[2], notes);
+    }
+}
+
+fn draw_release_notes_panel(frame: &mut Frame, area: Rect, notes: &str) {
+    let widget = Paragraph::new(notes).block(theme::titled_block("Release Notes")).wrap(Wrap { trim: false });
+    frame.render_widget(widget, area);
 }
 
 fn draw_preview_panel(frame: &mut Frame, area: Rect, state: &AppState, preview: &str) {

@@ -1,4 +1,4 @@
-use gpick::{app, git, ui};
+use gpick::{app, git, release_notes, ui};
 
 use app::{AppState, Screen};
 use clap::Parser;
@@ -47,10 +47,16 @@ fn load_commits_for_branch(state: &mut AppState, branch: &str) {
                 Err(_) => commits,
             };
             state.load_commits(commits);
+            state.release_notes = state
+                .commits
+                .first()
+                .and_then(|c| release_notes::parse_version_bump(&c.message))
+                .and_then(|(repo, version)| release_notes::fetch_release_notes(&repo, &version));
         }
         Err(e) => {
             state.last_error = Some(e.to_string());
             state.load_commits(Vec::new());
+            state.release_notes = None;
         }
     }
 }
@@ -72,6 +78,7 @@ fn return_to_branch_list_after_execution(state: &mut AppState) {
     state.execution_index = 0;
     state.execution_results.clear();
     state.selected_branch = None;
+    state.release_notes = None;
     state.screen = Screen::BranchList;
 }
 
@@ -433,6 +440,42 @@ mod tests {
     }
 
     #[test]
+    fn load_commits_for_branch_fetches_release_notes_for_a_version_bump() {
+        let dir = init_repo();
+        commit_file(&dir, "base.txt", "base", "base");
+        let base_sha = git::run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        std::process::Command::new("git")
+            .args(["checkout", "-q", "-b", "feature"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        commit_file(&dir, "bump.txt", "bump", "chore(deps): update koenkk/zigbee2mqtt docker tag to v2.14.0");
+
+        let mut state = AppState::new(dir.path().to_path_buf(), base_sha, vec![]);
+        load_commits_for_branch(&mut state, "feature");
+
+        assert!(state.release_notes.as_ref().is_some_and(|n| !n.is_empty()));
+    }
+
+    #[test]
+    fn load_commits_for_branch_leaves_release_notes_empty_for_a_non_bump_commit() {
+        let dir = init_repo();
+        commit_file(&dir, "base.txt", "base", "base");
+        let base_sha = git::run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        std::process::Command::new("git")
+            .args(["checkout", "-q", "-b", "feature"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        commit_file(&dir, "b.txt", "b", "feat: add a new thing");
+
+        let mut state = AppState::new(dir.path().to_path_buf(), base_sha, vec![]);
+        load_commits_for_branch(&mut state, "feature");
+
+        assert!(state.release_notes.is_none());
+    }
+
+    #[test]
     fn return_to_branch_list_after_execution_resets_pick_state() {
         let mut state = AppState::new("/tmp".into(), "main".into(), vec![]);
         state.selected_branch = Some("feature".to_string());
@@ -447,6 +490,7 @@ mod tests {
         state.execution_queue = vec![0];
         state.execution_index = 1;
         state.screen = Screen::Execution;
+        state.release_notes = Some("some notes".to_string());
 
         return_to_branch_list_after_execution(&mut state);
 
@@ -456,6 +500,7 @@ mod tests {
         assert!(state.selected.is_empty());
         assert!(state.execution_queue.is_empty());
         assert_eq!(state.execution_index, 0);
+        assert!(state.release_notes.is_none());
     }
 
     #[test]

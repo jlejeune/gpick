@@ -101,6 +101,10 @@ pub struct AppState {
     /// to `None` by any other key so a later range starts fresh.
     pub range_anchor: Option<usize>,
     pub selected_branch: Option<String>,
+    /// Release notes for the version bump the opened branch's first commit
+    /// represents, if any — see `release_notes::parse_version_bump`.
+    /// `None` shows no third panel at all, rather than an empty one.
+    pub release_notes: Option<String>,
     pub commits: Vec<git::Commit>,
     pub commit_cursor: usize,
     pub selected: HashSet<usize>,
@@ -132,6 +136,7 @@ impl AppState {
             selected_branches: HashSet::new(),
             range_anchor: None,
             selected_branch: None,
+            release_notes: None,
             commits: Vec::new(),
             commit_cursor: 0,
             selected: HashSet::new(),
