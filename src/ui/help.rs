@@ -7,7 +7,9 @@ use ratatui::widgets::{Paragraph, Wrap};
 /// footer so a first-time user always knows what to press.
 pub fn footer_text(screen: &Screen) -> &'static str {
     match screen {
-        Screen::BranchList => "↑/↓ move  type to filter  Enter select  Del delete [L]ocal or [R]emote  q/Esc quit",
+        Screen::BranchList => {
+            "↑/↓ move  / search  a show all  Enter select  Del delete [L]ocal or [R]emote  p push to master  q/Esc quit"
+        }
         Screen::CommitList => "↑/↓ move  Space toggle  Enter cherry-pick  q/Esc back",
         Screen::Execution => "running…  q quit",
         Screen::ConflictPause => "c continue (after resolving + git add)  a abort  q/Esc quit",

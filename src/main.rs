@@ -43,6 +43,11 @@ fn load_commits_for_branch(state: &mut AppState, branch: &str) {
 /// Resets per-pick state and returns to the branch list so the user can
 /// chain another cherry-pick without restarting the program.
 fn return_to_branch_list_after_execution(state: &mut AppState) {
+    if let Some(branch) = &state.selected_branch {
+        if let Ok(true) = git::is_fully_picked(&state.cwd, &state.base, branch) {
+            state.fully_picked.insert(branch.clone());
+        }
+    }
     state.commits.clear();
     state.commit_cursor = 0;
     state.selected.clear();
@@ -111,6 +116,7 @@ fn main() -> io::Result<()> {
     };
 
     let mut state = AppState::new(cwd, base, branches);
+    state.fully_picked = git::fully_picked_branches(&state.cwd, &state.base, &state.branches);
 
     install_panic_hook();
     enable_raw_mode()?;
@@ -162,6 +168,8 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
             }
             let footer_kind = if let Some(pending) = &state.pending_delete {
                 FooterKind::Confirm(ui::branch_list::confirm_prompt(pending))
+            } else if state.pending_push {
+                FooterKind::Confirm(ui::branch_list::push_confirm_prompt(state))
             } else if let Some(err) = &state.last_error {
                 FooterKind::Error(format!("Error: {err}"))
             } else {
@@ -216,6 +224,10 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, state: &mut App
                 }
 
                 if ui::branch_list::handle_key_delete_confirm(state, key.code) {
+                    continue;
+                }
+
+                if ui::branch_list::handle_key_push_confirm(state, key.code) {
                     continue;
                 }
 
@@ -351,5 +363,29 @@ mod tests {
         assert!(state.selected.is_empty());
         assert!(state.execution_queue.is_empty());
         assert_eq!(state.execution_index, 0);
+    }
+
+    #[test]
+    fn return_to_branch_list_after_execution_marks_the_branch_fully_picked_if_it_now_is() {
+        use std::process::Command;
+        let dir = init_repo();
+        commit_file(&dir, "base.txt", "base", "base");
+        let base_sha = git::run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+        Command::new("git").args(["checkout", "-q", "-b", "feature"]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "shared.txt", "shared change", "shared");
+
+        Command::new("git").args(["checkout", "-q", &base_sha]).current_dir(dir.path()).status().unwrap();
+        commit_file(&dir, "shared.txt", "shared change", "picked via cherry-pick");
+        let new_base_sha = git::run_git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        let mut state = AppState::new(dir.path().to_path_buf(), new_base_sha, vec![]);
+        state.selected_branch = Some("feature".to_string());
+        state.screen = Screen::Execution;
+        state.execution_queue = vec![0];
+        state.execution_index = 1;
+
+        return_to_branch_list_after_execution(&mut state);
+
+        assert!(state.fully_picked.contains("feature"));
     }
 }
