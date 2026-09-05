@@ -38,7 +38,7 @@ Run it from inside the repository you want to work in:
 gpick
 ```
 
-By default it detects the base branch (`origin/HEAD`, falling back to `main` then `master`). Override it explicitly:
+By default it detects the base branch (`origin/HEAD`, falling back to `master` then `main`). Override it explicitly:
 
 ```sh
 gpick --base develop

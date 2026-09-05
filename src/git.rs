@@ -141,7 +141,7 @@ pub fn detect_base(cwd: &Path, override_ref: Option<&str>) -> Result<String, Git
         }
     }
 
-    for candidate in ["main", "master"] {
+    for candidate in ["master", "main"] {
         if run_git(cwd, &["rev-parse", "--verify", "--quiet", candidate]).is_ok() {
             return Ok(candidate.to_string());
         }
@@ -586,12 +586,22 @@ mod tests {
     }
 
     #[test]
-    fn detect_base_falls_back_to_main_when_no_origin_head() {
+    fn detect_base_falls_back_to_master_when_no_origin_head() {
         let dir = init_repo();
         commit_file(&dir, "a.txt", "a");
-        Command::new("git").args(["branch", "-m", "main"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["branch", "-m", "master"]).current_dir(dir.path()).status().unwrap();
         let base = detect_base(dir.path(), None).unwrap();
-        assert_eq!(base, "main");
+        assert_eq!(base, "master");
+    }
+
+    #[test]
+    fn detect_base_prefers_master_over_main_when_both_exist() {
+        let dir = init_repo();
+        commit_file(&dir, "a.txt", "a");
+        Command::new("git").args(["branch", "-m", "master"]).current_dir(dir.path()).status().unwrap();
+        Command::new("git").args(["branch", "main"]).current_dir(dir.path()).status().unwrap();
+        let base = detect_base(dir.path(), None).unwrap();
+        assert_eq!(base, "master");
     }
 
     #[test]
