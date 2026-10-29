@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make sure that the tag matches the crate version
+        run: |
+          crate_version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          test "v${crate_version}" = "${GITHUB_REF_NAME}"
+
+      - name: Install the musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add "${TARGET}"
+
+      - name: Build
+        run: cargo build --release --locked --target "${TARGET}"
+
+      - name: Package the binary
+        run: |
+          tar -czf "gpick-${TARGET}.tar.gz" -C "target/${TARGET}/release" gpick
+          sha256sum "gpick-${TARGET}.tar.gz" > checksums.txt
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --generate-notes "gpick-${TARGET}.tar.gz" checksums.txt

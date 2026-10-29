@@ -30,6 +30,16 @@ cargo build --release
 
 The binary ends up at `target/release/gpick`.
 
+## Install
+
+Each `v*` tag publishes a release with a static Linux binary for `x86_64`. Download `gpick-x86_64-unknown-linux-musl.tar.gz` and `checksums.txt` from the release page. Make sure that the checksum matches, then extract the `gpick` binary to a directory in your `PATH`.
+
+```sh
+sha256sum --check --ignore-missing checksums.txt
+tar -xzf gpick-x86_64-unknown-linux-musl.tar.gz -C ~/.local/bin gpick
+gpick --version
+```
+
 ## Usage
 
 Run it from inside the repository you want to work in:
