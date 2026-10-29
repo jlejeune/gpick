@@ -107,7 +107,7 @@ fn install_panic_hook() {
 }
 
 #[derive(Parser)]
-#[command(name = "gpick", about = "Interactive cherry-pick TUI")]
+#[command(name = "gpick", version, about = "Interactive cherry-pick TUI")]
 struct Cli {
     /// Override the auto-detected base ref (defaults to origin/HEAD, then main, then master)
     #[arg(long)]
